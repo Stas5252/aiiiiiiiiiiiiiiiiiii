@@ -1,0 +1,18 @@
+# Секреты и сессии — никогда не коммитить
+.env
+*.session
+*.session-journal
+
+# Данные с лидами (там могут быть персональные данные)
+data/
+exports/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.DS_Store
