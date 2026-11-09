@@ -12,6 +12,8 @@ log = logging.getLogger(__name__)
 API = "https://generativelanguage.googleapis.com/v1beta"
 OPENAI_BASE = f"{API}/openai/"
 
+TTS_FALLBACK = "gemini-3.8-flash-lite-tts"  # тоже бесплатный, отдельная квота
+
 DEFAULTS = {
     "image_model": "gemini-nano-banana-2.1",  # платный тариф; бюджетный вариант — gemini-3.1-flash-lite-image
     "video_model": "gemini-omni-1.2-flash",   # Veo 3.1 preview в Gemini API закрыт 22.10.2026; 3–15 с, 9:16, звук
@@ -116,17 +118,42 @@ class GeminiMedia:
             return None
         data = await self._interact(
             self.image_model, [{"type": "text", "text": prompt[:3000]}],
-            {"type": "image", "mime_type": "image/png", "aspect_ratio": aspect, "image_size": "1K"})
+            {"type": "image", "mime_type": "image/jpeg", "aspect_ratio": aspect, "image_size": "1K"})
         imgs = _parts(data, "image")
         if not imgs or not imgs[-1].get("data"):
             raise GeminiError(f"Gemini не вернул картинку: {_texts(data) or 'пустой ответ'}")
         return base64.b64decode(imgs[-1]["data"])
 
     async def speech(self, text: str) -> bytes | None:
+        """Бесплатный тариф TTS: 3 запроса в минуту и ~10 в день — ждём минутный лимит, на дневном уходим на lite-модель."""
         if not self.tts_enabled or not text.strip():
             return None
+        model = self.tts_model
+        for attempt in range(3):
+            try:
+                return await self._speech(model, text)
+            except GeminiError as e:
+                msg = str(e)
+                if "429" not in msg or attempt == 2:
+                    raise
+                if "per day" in msg and model != TTS_FALLBACK:
+                    model = TTS_FALLBACK
+                    continue
+                wait = 22.0
+                if "retry in" in msg.lower():
+                    import re
+                    m = re.search(r"retry in (\d+)s", msg, re.I)
+                    if m:
+                        wait = min(90.0, float(m.group(1)) + 2)
+                    elif re.search(r"retry in \d+h", msg, re.I) and model != TTS_FALLBACK:
+                        model = TTS_FALLBACK
+                        continue
+                await _sleep(wait)
+        return None
+
+    async def _speech(self, model: str, text: str) -> bytes | None:
         data = await self._interact(
-            self.tts_model,
+            model,
             [{"type": "user_input", "content": [{"type": "text", "text": text[:4000]}]}],
             {"type": "audio"}, extra={"generation_config": {"speech_config": [{"voice": self.tts_voice}]}})
         audio = _parts(data, "audio")
