@@ -1,0 +1,11 @@
+services:
+  leadhunter:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"   # Mini App; наружу — через HTTPS-прокси (Caddy / Cloudflare Tunnel)
+    restart: unless-stopped
+    # Для первой авторизации Telegram-аккаунта:
+    # docker compose run --rm -it leadhunter python -m leadhunter.tg_login

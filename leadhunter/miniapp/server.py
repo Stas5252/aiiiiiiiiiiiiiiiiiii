@@ -1,0 +1,272 @@
+"""HTTP-сервер Mini App: статика + JSON API. Авторизация — подпись initData от Telegram."""
+import json
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+from aiohttp import web
+
+from ..db import Database
+from ..filters import parse_rule
+from .auth import validate_init_data
+
+log = logging.getLogger(__name__)
+STATIC = os.path.join(os.path.dirname(__file__), "static")
+STATUSES = ("new", "taken", "contacted", "replied", "deal", "lost", "spam", "hot")
+
+
+def _row(r) -> dict:
+    return dict(r) if r is not None else None
+
+
+class MiniAppAPI:
+    def __init__(self, db: Database, bot_token: str, guard, deps, sources, dev_user_id: int | None = None):
+        self.db = db
+        self.bot_token = bot_token
+        self.guard = guard
+        self.deps = deps
+        self.sources = sources
+        self.dev_user_id = dev_user_id
+
+    # --- auth ---
+    async def user(self, request: web.Request) -> dict:
+        init_data = request.headers.get("X-Init-Data") or request.query.get("initData", "")
+        user = validate_init_data(init_data, self.bot_token) if init_data else None
+        if user is None and self.dev_user_id and not init_data:
+            user = {"id": self.dev_user_id, "first_name": "dev"}
+        if not user or "id" not in user:
+            raise web.HTTPUnauthorized(text="bad initData")
+        uid = int(user["id"])
+        if not (await self.guard.is_owner(uid) or await self.db.is_member(uid)):
+            raise web.HTTPForbidden(text="not a team member")
+        user["is_owner"] = await self.guard.is_owner(uid)
+        return user
+
+    @staticmethod
+    def _name(user: dict) -> str:
+        return " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or user.get("username") or str(user["id"])
+
+    # --- handlers ---
+    async def me(self, request):
+        user = await self.user(request)
+        return web.json_response({"user": user, "sources": [s.status_line() for s in self.sources]})
+
+    async def leads(self, request):
+        await self.user(request)
+        q = request.query
+        where, params = ["1=1"], []
+        if q.get("status"):
+            if q["status"] == "open":
+                where.append("status IN ('new','taken','contacted','replied')")
+            else:
+                where.append("status = ?"); params.append(q["status"])
+        if q.get("source"):
+            where.append("source = ?"); params.append(q["source"])
+        if q.get("service"):
+            where.append("service = ?"); params.append(q["service"])
+        if q.get("q"):
+            where.append("(text LIKE ? OR title LIKE ? OR author LIKE ?)")
+            params += [f"%{q['q']}%"] * 3
+        if q.get("mine") and q.get("mine") != "0":
+            user = await self.user(request)
+            where.append("assigned_to = ?"); params.append(int(user["id"]))
+        limit = min(int(q.get("limit", 50)), 200)
+        offset = int(q.get("offset", 0))
+        cur = await self.db.conn.execute(
+            f"SELECT id, source, score, status, service, urgency, budget, title, text, author, contact, url, summary,"
+            f" assigned_name, created_at, chat_title FROM leads WHERE {' AND '.join(where)}"
+            f" ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset))
+        rows = [dict(r) for r in await cur.fetchall()]
+        for r in rows:
+            r["text"] = (r["text"] or "")[:300]
+        return web.json_response({"leads": rows})
+
+    async def lead(self, request):
+        await self.user(request)
+        row = await self.db.get_lead(int(request.match_info["id"]))
+        if not row:
+            raise web.HTTPNotFound()
+        cur = await self.db.conn.execute("SELECT status, user_name, at FROM lead_events WHERE lead_id = ? ORDER BY id",
+                                         (row["id"],))
+        events = [dict(r) for r in await cur.fetchall()]
+        data = dict(row)
+        if not data.get("draft") and data.get("service"):
+            data["draft"] = await self.db.get_template(data["service"]) or ""
+        return web.json_response({"lead": data, "events": events})
+
+    async def set_status(self, request):
+        user = await self.user(request)
+        lead_id = int(request.match_info["id"])
+        body = await request.json()
+        status = body.get("status")
+        if status not in STATUSES:
+            raise web.HTTPBadRequest(text="bad status")
+        row = await self.db.get_lead(lead_id)
+        if not row:
+            raise web.HTTPNotFound()
+        name = self._name(user)
+        if status in ("taken", "contacted", "replied", "deal", "lost") and not row["assigned_to"]:
+            await self.db.assign(lead_id, int(user["id"]), name)
+        if status == "taken":
+            if not await self.db.assign(lead_id, int(user["id"]), name):
+                raise web.HTTPConflict(text=f"уже взял {row['assigned_name']}")
+        else:
+            await self.db.set_status(lead_id, status, int(user["id"]), name)
+        if status == "contacted":
+            await self.db.schedule_followup(lead_id, self.deps.followup_hours)
+        elif status != "hot":
+            await self.db.clear_followup(lead_id)
+        return web.json_response({"lead": _row(await self.db.get_lead(lead_id))})
+
+    async def stats(self, request):
+        await self.user(request)
+        days = int(request.query.get("days", 30))
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cur = await self.db.conn.execute(
+            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n, SUM(status='deal') AS deals FROM leads"
+            " WHERE created_at >= ? GROUP BY day ORDER BY day", (since,))
+        per_day = [dict(r) for r in await cur.fetchall()]
+        cur = await self.db.conn.execute("SELECT status, COUNT(*) AS n FROM leads WHERE created_at >= ? GROUP BY status", (since,))
+        by_status = {r["status"]: r["n"] for r in await cur.fetchall()}
+        times = await self.db.response_times(days)
+        times.sort()
+        return web.json_response({
+            "days": days,
+            "per_day": per_day,
+            "by_status": by_status,
+            "funnel_source": [dict(r) for r in await self.db.funnel(days, "source")],
+            "funnel_service": [dict(r) for r in await self.db.funnel(days, "service")],
+            "funnel_phrase": [dict(r) for r in await self.db.funnel(days, "phrase")][:15],
+            "funnel_chat": [dict(r) for r in await self.db.funnel(days, "chat")][:15],
+            "response": {"n": len(times), "median_min": times[len(times) // 2] if times else None,
+                         "under5_pct": (sum(1 for t in times if t <= 5) * 100 // len(times)) if times else None},
+            "team": [dict(r) for r in await self.db.team_stats(days)],
+            "sources": [s.status_line() for s in self.sources],
+        })
+
+    async def settings_get(self, request):
+        await self.user(request)
+        kw = await self.db.get_keywords()
+        return web.json_response({
+            "threshold": await self.db.get_setting("threshold", str(self.deps.extra.get("threshold", 5))),
+            "profile": await self.db.get_setting("profile") or self.deps.default_profile,
+            "geo": await self.db.get_setting("geo", ""),
+            "paused": (await self.db.get_setting("paused")) == "1",
+            "phrases": await self.deps.phrases.get(),
+            "rules": [dict(r) for r in await self.db.rules()],
+            "keywords": {"topic": kw.topic, "intent": kw.intent, "negative": kw.negative},
+            "templates": await self.db.templates(),
+            "ignored": await self.db.get_ignored(),
+            "team": [dict(r) for r in await self.db.members()],
+            "workspace": await self.db.get_setting("workspace_chat_id", ""),
+        })
+
+    async def settings_set(self, request):
+        user = await self.user(request)
+        body = await request.json()
+        for key, value in body.items():
+            if key == "threshold":
+                await self.db.set_setting("threshold", str(max(0, min(10, int(value)))))
+            elif key in ("profile", "geo"):
+                await self.db.set_setting(key, str(value).strip())
+            elif key == "paused":
+                await self.db.set_setting("paused", "1" if value else "0")
+            elif key == "phrases":
+                await self.deps.phrases.set(list(value))
+            elif key == "templates":
+                for service, text in dict(value).items():
+                    await self.db.set_template(service, text)
+            else:
+                raise web.HTTPBadRequest(text=f"unknown setting {key}")
+        log.info("settings changed by %s: %s", user["id"], list(body))
+        return await self.settings_get(request)
+
+    async def rule_add(self, request):
+        await self.user(request)
+        expr = (await request.json()).get("expr", "")
+        try:
+            parse_rule(expr)
+        except ValueError as e:
+            raise web.HTTPBadRequest(text=str(e))
+        await self.db.add_rule(expr)
+        return web.json_response({"rules": [dict(r) for r in await self.db.rules()]})
+
+    async def rule_del(self, request):
+        await self.user(request)
+        await self.db.remove_rule(int(request.match_info["id"]))
+        return web.json_response({"rules": [dict(r) for r in await self.db.rules()]})
+
+    async def keyword_add(self, request):
+        await self.user(request)
+        body = await request.json()
+        if body.get("kind") not in ("topic", "intent", "negative") or not body.get("word"):
+            raise web.HTTPBadRequest(text="kind/word")
+        await self.db.add_keyword(body["kind"], body["word"], body.get("category"))
+        return await self.settings_get(request)
+
+    async def keyword_del(self, request):
+        await self.user(request)
+        await self.db.remove_keyword(request.match_info["word"])
+        return await self.settings_get(request)
+
+    async def ignored_del(self, request):
+        await self.user(request)
+        await self.db.remove_ignored(request.match_info["key"])
+        return await self.settings_get(request)
+
+    async def index(self, request):
+        return web.FileResponse(os.path.join(STATIC, "index.html"))
+
+
+def build_app(api: MiniAppAPI) -> web.Application:
+    app = web.Application()
+    app.router.add_get("/", api.index)
+    app.router.add_get("/app", api.index)
+    app.router.add_get("/app/", api.index)
+    app.router.add_static("/static/", STATIC, show_index=False)
+    r = app.router
+    r.add_get("/api/me", api.me)
+    r.add_get("/api/leads", api.leads)
+    r.add_get("/api/leads/{id:\\d+}", api.lead)
+    r.add_post("/api/leads/{id:\\d+}/status", api.set_status)
+    r.add_get("/api/stats", api.stats)
+    r.add_get("/api/settings", api.settings_get)
+    r.add_post("/api/settings", api.settings_set)
+    r.add_post("/api/rules", api.rule_add)
+    r.add_delete("/api/rules/{id:\\d+}", api.rule_del)
+    r.add_post("/api/keywords", api.keyword_add)
+    r.add_delete("/api/keywords/{word}", api.keyword_del)
+    r.add_delete("/api/ignored/{key}", api.ignored_del)
+
+    @web.middleware
+    async def errors(request, handler):
+        try:
+            return await handler(request)
+        except web.HTTPException as e:
+            if e.status >= 400 and request.path.startswith("/api/"):
+                return web.json_response({"error": e.text or e.reason}, status=e.status)
+            raise
+    app.middlewares.append(errors)
+    return app
+
+
+async def start_miniapp(s, db: Database, bot, deps) -> None:
+    from aiogram.types import MenuButtonWebApp, WebAppInfo
+
+    api = MiniAppAPI(db, s.bot_token, deps.guard, deps, deps.sources, dev_user_id=None)
+    deps.extra["threshold"] = s.score_threshold
+    app = build_app(api)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", s.miniapp_port)
+    await site.start()
+    try:
+        await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Кабинет", web_app=WebAppInfo(url=s.miniapp_url)))
+    except Exception:
+        log.exception("не удалось поставить кнопку меню Mini App")
+    log.info("Mini App: http://0.0.0.0:%s → %s", s.miniapp_port, s.miniapp_url)
+    try:
+        while True:
+            await __import__("asyncio").sleep(3600)
+    finally:
+        await runner.cleanup()
