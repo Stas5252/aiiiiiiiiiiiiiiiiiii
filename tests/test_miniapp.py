@@ -120,3 +120,18 @@ async def test_static_served(client):
     r = await client.get("/app")
     assert r.status == 200 and "LeadHunter" in await r.text()
     assert (await client.get("/static/app.js")).status == 200
+
+
+async def test_settings_full_surface(client):
+    """Ниша, свежесть, бренд, голос, автопилот, каналы, подключения — всё через один endpoint."""
+    r = await client.get("/api/settings", headers=headers())
+    s = await r.json()
+    assert "niches" in s and "fresh" in s and "brand" in s and "integrations" in s
+    r = await client.post("/api/settings", headers=headers(), json={
+        "niche": "realtor", "fresh": {"board_max_age_hours": 2, "max_competitors": 8}, "voice": "на ты",
+        "brand": {"name": "Пиксель", "handle": "@px", "primary": "#000000", "accent": "#ffffff"}, "autopilot": True, "pillars": "а; б"})
+    s = await r.json()
+    assert s["niche"] == "realtor" and "ищу квартиру" in s["phrases"] and s["fresh"] == {"board_max_age_hours": 2.0, "max_competitors": 8}
+    assert s["brand"]["name"] == "Пиксель" and s["voice"] == "на ты" and s["autopilot"] is True and s["pillars"] == "а; б"
+    assert (await client.post("/api/settings", headers=headers(), json={"brand": {"primary": "red"}})).status == 400
+    assert (await client.post("/api/settings", headers=headers(), json={"niche": "nope"})).status == 400
