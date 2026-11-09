@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     # Mini App (кабинет внутри Telegram): публичный HTTPS-адрес, где доступен этот сервер
     miniapp_url: str | None = None
     miniapp_port: int = 8080
+    miniapp_tunnel: str = ""  # "cloudflare" — поднять бесплатный quick tunnel и не думать о домене
 
     # Telegram-аккаунт (Telethon) для чтения чатов. Бот сам в чужие чаты не попадёт.
     tg_api_id: int | None = None
@@ -145,6 +146,15 @@ class Settings(BaseSettings):
     # === Контент-фабрика ===
     content_dir: str = "data/content"
     content_hour: int = 10  # автопилот приносит черновик в этот час
+    # Gemini: один ключ (aistudio.google.com, есть бесплатный лимит) — тексты, картинки, озвучка и ИИ-видео (Veo).
+    # Если OPENAI_API_KEY не задан, тексты тоже идут в Gemini через OpenAI-совместимый endpoint.
+    gemini_api_key: str | None = None
+    gemini_model: str = ""  # текстовая модель Gemini; пусто = значение по умолчанию из content/gemini.py
+    gemini_image_model: str = ""
+    gemini_video_model: str = ""
+    gemini_tts_model: str = ""
+    gemini_tts_voice: str = "Kore"
+    # OpenAI-медиа (если нет Gemini): картинки и озвучка
     image_model: str = ""  # gpt-image-1 / dall-e-3; пусто = обложки по шаблону (без ИИ)
     tts_model: str = ""  # tts-1 / gpt-4o-mini-tts; пусто = видео без озвучки
     tts_voice: str = "alloy"

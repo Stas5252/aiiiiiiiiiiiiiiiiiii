@@ -10,9 +10,8 @@ from ..bot.guard import Guard
 from ..bot.handlers import BotDeps
 from ..bot.workspace import Workspace
 from ..config import Settings
-from ..content.runtime import build_content
+from ..content.runtime import build_content, build_llm
 from ..db import Database
-from ..llm import LLMClassifier
 from ..phrases import PhraseProvider, default_phrases
 from .server import MiniAppAPI, build_app
 
@@ -24,7 +23,7 @@ async def main(user_id: int, port: int) -> None:
     guard = Guard(None, db, s.owner_ids or [user_id])
     deps = BotDeps(db, [], guard, PhraseProvider(db, default_phrases(s)), Workspace(None, db), None, s.profile)
     deps.extra["threshold"] = s.score_threshold
-    llm = LLMClassifier(s.openai_api_key, s.openai_base_url, s.openai_model, s.llm_max_per_hour) if s.openai_api_key else None
+    llm = build_llm(s)
     await build_content(s, db, None, llm, deps, None)  # вкладка «Контент» и лендинги; публикация без бота недоступна
     api = MiniAppAPI(db, s.bot_token, guard, deps, [], dev_user_id=user_id)
     runner = web.AppRunner(build_app(api))

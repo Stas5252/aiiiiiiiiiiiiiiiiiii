@@ -15,7 +15,7 @@ from .guard import Guard
 from .notify import STATUS_LABELS
 from .workspace import TOPICS, Workspace
 
-HELP = """Я ищу лидов на сайты, ботов, ИИ-автоматизацию и ИИ-мультики и присылаю их сюда.
+HELP = """Я ищу лидов и делаю контент под вашу нишу. /niche — выбрать нишу одной командой, /app — кабинет.
 
 <b>Рабочая группа</b>
 /setup_group — выполнить в группе-форуме: бот создаст темы (Горячие, Сайты, Боты…) и будет слать лидов туда
@@ -93,6 +93,43 @@ def build_router(deps: BotDeps) -> Router:
     async def help_cmd(m: Message):
         if await allowed(m):
             await m.answer(HELP)
+
+    @router.message(Command("niche"))
+    async def niche(m: Message, command: CommandObject):
+        if not await allowed(m):
+            return
+        from ..niches import NICHES, apply, describe
+        key = (command.args or "").strip().lower()
+        if not key:
+            cur = await db.get_setting("niche", "web")
+            lines = [f"{'▶️' if k == cur else '▫️'} <code>/niche {k}</code> — {n.title}" for k, n in NICHES.items()]
+            await m.answer("<b>Ниши</b> — одна команда меняет профиль для ИИ, фразы поиска, словарь и рубрики контента:\n"
+                           + "\n".join(lines) + "\n\nСвоя ниша: /profile текст + /phrases_set + /kw_add")
+            return
+        if key not in NICHES:
+            await m.answer("Нет такой ниши. Список: /niche")
+            return
+        n = NICHES[key]
+        await apply(db, deps.phrases, n)
+        for src in deps.sources:  # Яндекс.Карты: кого искать без сайта
+            if n.yandex_queries and hasattr(src, "queries") and getattr(src, "name", "") == "yandex_maps":
+                src.queries = n.yandex_queries
+        await m.answer("Переключил нишу:\n" + describe(n) + "\n\nИсточники подхватят фразы на следующем проходе. "
+                       "Проверьте /profile, при желании уточните его под себя.")
+
+    @router.message(Command("app"))
+    async def app_cmd(m: Message):
+        if not await allowed(m):
+            return
+        url = deps.extra.get("miniapp_url")
+        if not url:
+            await m.answer("Mini App не включён: боту нужен публичный HTTPS-адрес.\n"
+                           "Быстро и бесплатно: <code>MINIAPP_TUNNEL=cloudflare</code> в .env — бот сам поднимет туннель и поставит "
+                           "кнопку «Кабинет» в меню. Или свой домен: <code>MINIAPP_URL=https://ваш-домен/app</code>.")
+            return
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 Открыть кабинет", web_app=WebAppInfo(url=url))]])
+        await m.answer("Кабинет: лиды, отчёт, контент и настройки. Кнопка «Кабинет» есть и в меню рядом с полем ввода.", reply_markup=kb)
 
     # --- рабочая группа и команда ---
     @router.message(Command("setup_group"))
