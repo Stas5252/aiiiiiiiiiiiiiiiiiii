@@ -416,3 +416,44 @@ def test_format_card_truncates():
     row = Row(id=1, kind="post", status="draft", topic="t", title="T", body="x" * 5000, hashtags="", media="", scheduled_at=None,
               published=None, slug=None, caption="")
     assert len(format_card(row)) <= 4010 and format_card(row).endswith("…")
+
+
+async def test_toon_and_niche(env_noai):
+    env = env_noai
+    if ffmpeg_available():
+        texts = await env.text("/toon Где заявки | Директор: Где заявки?! | Разработчик: Сайт готов, но рекламы нет")
+        assert "видео собрано" in texts[-1] and "Директор" in texts[-1] and "SendVideo" in env.session.names()
+        row = (await env.factory.store.recent(1))[0]
+        assert row["kind"] == "toon" and os.path.getsize(env.factory.media.path(json.loads(row["media"])["video"])) > 0
+    assert "GEMINI_API_KEY" in (await env.text("/aivideo тема"))[0]
+    texts = await env.text("/niche")
+    assert "/niche realtor" in texts[0] and "▶️" in texts[0]
+    texts = await env.text("/niche realtor")
+    assert "Переключил нишу" in texts[0] and "Недвижимость" in texts[0]
+    assert "Риелтор" in await env.db.get_setting("profile") and "ипотека" in await env.db.get_setting("pillars")
+    assert "ищу квартиру" in await env.deps.phrases.get()
+    kw = await env.db.get_keywords()
+    assert kw.topic.get("ипотек") == "ипотека" and "сайт" not in kw.topic and "ищу" in kw.intent
+    assert "Нет такой" in (await env.text("/niche xyz"))[0]
+    assert "не включён" in (await env.text("/app"))[0]
+    env.deps.extra["miniapp_url"] = "https://x.trycloudflare.com/app"
+    assert "Кабинет" in (await env.text("/app"))[0]
+
+
+@pytest.mark.skipif(not ffmpeg_available(), reason="нет ffmpeg")
+async def test_aivideo_assemble(tmp_path):
+    import subprocess
+    from leadhunter.content.aivideo import assemble
+    from leadhunter.content.video import probe_duration
+
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=360x640:d=2", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(clip)], check=True)
+    mute = tmp_path / "mute.mp4"  # клип без звуковой дорожки
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=red:s=360x640:d=2", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(mute)], check=True)
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "1", str(voice)], check=True)
+    out = str(tmp_path / "out.mp4")
+    await assemble([(clip.read_bytes(), voice.read_bytes()), (mute.read_bytes(), None)], out, size=(360, 640))
+    assert os.path.getsize(out) > 0 and abs(await probe_duration(out) - 4.0) < 0.6

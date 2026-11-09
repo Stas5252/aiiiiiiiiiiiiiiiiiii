@@ -45,11 +45,12 @@ def compose_text(row) -> str:
 
 
 class ContentFactory:
-    def __init__(self, store: ContentStore, gen: ContentGenerator, media: MediaStore, ai: MediaAI, db):
+    def __init__(self, store: ContentStore, gen: ContentGenerator, media: MediaStore, ai, db, video_ai=None):
         self.store = store
         self.gen = gen
         self.media = media
-        self.ai = ai
+        self.ai = ai  # картинки и озвучка: Gemini или OpenAI (общий интерфейс image/speech/*_enabled)
+        self.video_ai = video_ai  # ИИ-видео через Gemini Omni
         self.db = db
 
     async def brand(self):
@@ -105,6 +106,18 @@ class ContentFactory:
             except Exception as e:
                 log.warning("видео не собралось: %s", e)
                 media["error"] = str(e)[:300]
+        elif row["kind"] == "toon":
+            try:
+                media["video"] = await self._toon(data, brand)
+            except Exception as e:
+                log.warning("мультик не собрался: %s", e)
+                media["error"] = str(e)[:300]
+        elif row["kind"] == "aivideo":
+            try:
+                media["video"] = await self._aivideo(data)
+            except Exception as e:
+                log.warning("ИИ-видео не собралось: %s", e)
+                media["error"] = str(e)[:300]
         else:
             cover = None
             if ai_image and self.ai.images_enabled and row["image_prompt"]:
@@ -121,22 +134,54 @@ class ContentFactory:
         await self.store.update(item_id, media=media)
         return media
 
+    async def _speech(self, text: str) -> bytes | None:
+        if not text or not self.ai.tts_enabled:
+            return None
+        try:
+            return await self.ai.speech(text)
+        except Exception as e:
+            log.warning("озвучка не удалась: %s", e)
+            return None
+
     async def _video(self, data: dict, brand) -> str:
         from .video import build_video
 
         scenes = []
         for s in data.get("scenes") or []:
-            audio = None
-            if self.ai.tts_enabled and s.get("voice"):
-                try:
-                    audio = await self.ai.speech(s["voice"])
-                except Exception as e:
-                    log.warning("озвучка не удалась: %s", e)
-            scenes.append({"text": s.get("text", ""), "duration": float(s.get("duration") or 3), "audio": audio})
+            scenes.append({"text": s.get("text", ""), "duration": float(s.get("duration") or 3),
+                           "audio": await self._speech(s.get("voice", ""))})
         if not scenes:
             raise RuntimeError("в сценарии нет сцен")
         name = self.media.save(b"", ".mp4")
         await build_video(scenes, brand, self.media.path(name))
+        return name
+
+    async def _toon(self, data: dict, brand) -> str:
+        from .toon import build_toon, normalize_script
+
+        script = normalize_script(data)
+        for scene in script["scenes"]:
+            line = scene.get("line") or {}
+            scene["audio"] = await self._speech(line.get("text", ""))
+        name = self.media.save(b"", ".mp4")
+        await build_toon(script, brand, self.media.path(name))
+        return name
+
+    async def _aivideo(self, data: dict) -> str:
+        from .aivideo import assemble
+
+        if not self.video_ai or not self.video_ai.video_enabled:
+            raise RuntimeError("Генерация видео нейросетью требует GEMINI_API_KEY (Gemini Omni)")
+        clips = []
+        for clip in data.get("clips") or []:
+            video = await self.video_ai.video(clip["prompt"], aspect="9:16")
+            if not video:
+                raise RuntimeError("Gemini не вернул видео")
+            clips.append((video, await self._speech(clip.get("voice", ""))))
+        if not clips:
+            raise RuntimeError("нет клипов")
+        name = self.media.save(b"", ".mp4")
+        await assemble(clips, self.media.path(name))
         return name
 
     def files(self, row) -> tuple[list[bytes], str | None]:

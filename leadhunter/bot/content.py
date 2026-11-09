@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 CONTENT_HELP = """<b>Контент-фабрика</b> — ИИ пишет под ваш профиль и учится на ваших правках.
 
 /post тема · /carousel тема · /reel тема · /magnet тема — сделать пост / карусель / короткое видео / лид-магнит
+/toon тема — мультик с персонажами, рендерится кодом (без нейросети) · /aivideo тема — ИИ-мультик нейросетью Gemini (нужен GEMINI_API_KEY, платно ≈ 0,07 $/сек)
 /ideas [N] — идеи из реальных запросов клиентов · /plan — план на неделю (с автопилотом сам предложит черновики)
 /publish текст — опубликовать свой текст (обложка подставится)
 /queue — очередь · /schedule id 2025-01-15 10:00 — точное время · /content — статистика
@@ -83,6 +84,20 @@ def format_card(row, tz: str = "Europe/Moscow") -> str:
     elif row["kind"] == "carousel":
         for n, s in enumerate(data.get("slides") or [], 1):
             lines.append(f"<b>{n}. {e(s.get('title', ''))}</b> — {e(s.get('text', ''))}")
+        if row["caption"]:
+            lines.append(f"\n📝 {e(row['caption'])}")
+    elif row["kind"] == "toon":
+        chars = data.get("characters") or {}
+        names = {k: (v.get("name") or k) for k, v in chars.items()} if isinstance(chars, dict) else {}
+        for n, s in enumerate(data.get("scenes") or [], 1):
+            line = s.get("line") or {}
+            who = names.get(line.get("speaker", ""), line.get("speaker", ""))
+            lines.append(f"{n}. [{e(s.get('bg', ''))}] <b>{e(who)}</b>: {e(line.get('text', ''))}")
+        if row["caption"]:
+            lines.append(f"\n📝 {e(row['caption'])}")
+    elif row["kind"] == "aivideo":
+        for n, c in enumerate(data.get("clips") or [], 1):
+            lines.append(f"{n}. 🎙 {e(c.get('voice', ''))}\n<i>{e(c.get('prompt', '')[:160])}</i>")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "reel":
@@ -175,7 +190,7 @@ def build_content_router(deps) -> Router:
         await deliver(row, m.chat.id, m.message_thread_id)
 
     # --- генерация ---
-    for _kind in ("post", "carousel", "reel", "magnet"):
+    for _kind in ("post", "carousel", "reel", "toon", "aivideo", "magnet"):
         def _bind(kind: str):
             @router.message(Command(kind))
             async def gen_cmd(m: Message, command: CommandObject, state: FSMContext):
@@ -192,6 +207,10 @@ def build_content_router(deps) -> Router:
 
     async def _run(m: Message, kind: str, topic: str):
         f = factory()
+        if kind == "aivideo" and not (f.video_ai and f.video_ai.video_enabled):
+            await m.answer("ИИ-мультики генерирует нейросеть Gemini Omni — задайте GEMINI_API_KEY в .env (aistudio.google.com). "
+                           "Без него есть /toon — мультик с персонажами, который рисуется кодом.")
+            return
         if f.gen.available:
             await make(m, kind, topic)
             return
@@ -204,9 +223,26 @@ def build_content_router(deps) -> Router:
         elif kind == "reel" and len(parts) >= 2:
             data = {"title": parts[0], "scenes": [{"text": p, "voice": "", "duration": 3} for p in parts], "caption": parts[0], "hashtags": []}
             await make(m, kind, parts[0], data=data)
+        elif kind == "toon" and len(parts) >= 2:
+            # Без ИИ: «Название | Имя: реплика | Имя: реплика» — два первых имени становятся персонажами слева и справа
+            chars, scenes = {}, []
+            for p in parts[1:]:
+                who, _, text = p.partition(":")
+                who, text = (who.strip() or "Герой"), (text.strip() or p.strip())
+                chars.setdefault(who, {"name": who, "color": ["#F2C14E", "#6FB9F0", "#8EEE98"][len(chars) % 3], "shape": "round"})
+                cid = who
+                ids = list(chars)
+                scenes.append({"bg": "office", "duration": 3.5,
+                               "characters": [{"id": c, "pos": "left" if i == 0 else "right" if i == 1 else "center",
+                                               "emotion": "happy" if c == cid else "neutral", "action": "talk" if c == cid else "idle"}
+                                              for i, c in enumerate(ids[:3])],
+                               "line": {"speaker": cid, "text": text}})
+            data = {"title": parts[0], "style": "flat", "characters": chars, "scenes": scenes, "caption": parts[0], "hashtags": []}
+            await make(m, kind, parts[0], data=data)
         else:
-            await m.answer("ИИ не подключён (OPENAI_API_KEY). Без него можно: /publish текст, "
-                           "/carousel Заголовок | слайд 1 | слайд 2, /reel фраза 1 | фраза 2")
+            await m.answer("ИИ не подключён (GEMINI_API_KEY или OPENAI_API_KEY). Без него можно: /publish текст, "
+                           "/carousel Заголовок | слайд 1 | слайд 2, /reel фраза 1 | фраза 2, "
+                           "/toon Название | Директор: реплика | Разработчик: реплика")
 
     @router.message(ContentState.topic, F.text, ~F.text.startswith("/"))
     async def topic_reply(m: Message, state: FSMContext):
@@ -497,8 +533,9 @@ def build_content_router(deps) -> Router:
         row = await factory().store.get(row["id"])
         await refresh(cq, row)
         msg = ("✅ Опубликовано: " + ", ".join(f"{API_PLATFORMS.get(r.platform, r.platform)} {r.url}".strip() for r in out.results)) if out.results else ""
-        if out.errors:
-            msg += ("\n" if msg else "") + "⚠️ " + "\n⚠️ ".join(out.errors)
+        notes = [r.note for r in out.results if getattr(r, "note", "")]
+        if out.errors or notes:
+            msg += ("\n" if msg else "") + "⚠️ " + "\n⚠️ ".join(out.errors + notes)
         await cq.message.reply(html.escape(msg) if msg else "Никуда не ушло", disable_web_page_preview=True)
 
     @router.callback_query(F.data.startswith("cs:"))

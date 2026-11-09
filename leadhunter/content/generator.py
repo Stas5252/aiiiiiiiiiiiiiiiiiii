@@ -42,9 +42,25 @@ JSON: {{"title": "название лид-магнита (до 60 знаков)"
 "post": "анонс лид-магнита для соцсетей 400–700 знаков: боль → что внутри → как получить (написать слово в личку / ссылка)",
 "hashtags": ["#тег", ...], "image_prompt": "обложка на английском, без текста"}}""",
     "ideas": """Предложи {n} идей для контента студии на ближайшую неделю. Опирайся на боли клиентов ниже, если они есть:
-каждая идея должна отвечать на реальный вопрос или возражение клиента. Чередуй форматы: post, carousel, reel, magnet.
-JSON: {{"ideas": [{{"topic": "тема в 5–10 словах", "kind": "post|carousel|reel|magnet", "hook": "первая фраза, которая цепляет",
+каждая идея должна отвечать на реальный вопрос или возражение клиента. Чередуй форматы: post, carousel, reel, toon, magnet.
+JSON: {{"ideas": [{{"topic": "тема в 5–10 словах", "kind": "post|carousel|reel|toon|magnet", "hook": "первая фраза, которая цепляет",
 "why": "почему это сработает, 1 предложение"}}, ...]}}""",
+    "toon": """Напиши сценарий короткого вертикального мультика (20–40 секунд) на тему: «{topic}».
+Это 2D-мультик с простыми персонажами, который рендерится кодом: 2–3 персонажа, 5–9 сцен, диалог живой и смешной, с конфликтом и развязкой,
+в конце — вывод и мягкий призыв. Реплики короткие (до 90 знаков), разговорные. Персонажи: ключ латиницей, имя, цвет (hex), форма.
+JSON: {{"title": "название", "style": "flat|chalk",
+"characters": {{"boss": {{"name": "Директор", "color": "#F2C14E", "shape": "round|tall|square"}}, "dev": {{"name": "Разработчик", "color": "#6FB9F0", "shape": "tall"}}}},
+"scenes": [{{"bg": "office|street|home|abstract|none", "duration": 4,
+  "characters": [{{"id": "boss", "pos": "left|center|right", "emotion": "neutral|happy|angry|sad|surprised|thinking", "action": "idle|talk|walk|jump|point|shake|nod"}}],
+  "line": {{"speaker": "boss", "text": "реплика"}}, "caption": "короткий титр сверху или пусто"}}, ...],
+"caption": "подпись к видео 200–400 знаков с призывом", "hashtags": ["#тег", ...]}}""",
+    "aivideo": """Придумай короткий ИИ-мультик (видео генерирует нейросеть Gemini Omni клипами по 8–10 секунд) на тему: «{topic}».
+1–3 клипа, единый герой и стиль во всех клипах (повтори описание героя и стиля в каждом промпте — так нейросеть сохранит персонажа).
+Промпты на английском, кинематографичные: стиль (например, "3D Pixar-style animation" или "2D flat cartoon"), герой, действие, камера,
+свет, настроение; без текста на экране. Отдельно — озвучка по-русски для каждого клипа (1–2 предложения, читается за 8 секунд).
+JSON: {{"title": "название", "style": "общее описание стиля на английском",
+"clips": [{{"prompt": "английский промпт клипа", "voice": "русская озвучка клипа"}}, ...],
+"caption": "подпись к видео 200–400 знаков с призывом", "hashtags": ["#тег", ...]}}""",
 }
 
 REWRITE = """Ниже материал ({kind}) в JSON. Перепиши его по указанию владельца: «{instruction}».
@@ -92,10 +108,13 @@ class ContentGenerator:
             edits_txt = ("Как владелец правил предыдущие тексты (учись на этом: пиши сразу как в «стало»):\n"
                          + "\n".join(f"БЫЛО: {a[:400]}\nСТАЛО: {b[:400]}" for a, b in edits) + "\n")
         pains_txt = ""
-        if kind in ("ideas", "post", "carousel", "reel"):
+        if kind in ("ideas", "post", "carousel", "reel", "toon"):
             pains = await self.pains()
             if pains:
                 pains_txt = "Боли и запросы клиентов за последние 2 недели:\n" + "\n".join(f"- {p}" for p in pains) + "\n"
+            pillars = await self.db.get_setting("pillars", "")
+            if pillars:
+                pains_txt += f"Рубрики контента (чередуй их): {pillars}\n"
         return SYSTEM.format(profile=profile, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
 
     async def generate(self, kind: str, topic: str, *, platform: str = "", n: int = 7) -> dict:
@@ -143,8 +162,16 @@ class ContentGenerator:
         if kind == "ideas":
             data["ideas"] = [i for i in data.get("ideas") or [] if isinstance(i, dict) and i.get("topic")]
             for i in data["ideas"]:
-                if i.get("kind") not in ("post", "carousel", "reel", "magnet"):
+                if i.get("kind") not in ("post", "carousel", "reel", "toon", "magnet"):
                     i["kind"] = "post"
+        if kind == "toon":
+            from .toon import normalize_script
+            data.update(normalize_script(data))
+        if kind == "aivideo":
+            clips = [c for c in data.get("clips") or [] if isinstance(c, dict) and c.get("prompt")][:3]
+            if not clips:
+                raise ValueError("ИИ не вернул ни одного клипа")
+            data["clips"] = [{"prompt": str(c["prompt"]), "voice": str(c.get("voice", ""))} for c in clips]
         return data
 
 

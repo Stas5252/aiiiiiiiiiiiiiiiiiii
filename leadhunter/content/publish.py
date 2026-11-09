@@ -15,7 +15,7 @@ from aiogram.types import BufferedInputFile, FSInputFile, InputMediaPhoto
 CAPTION_LIMIT = 1024
 MESSAGE_LIMIT = 4096
 THREADS_LIMIT = 500
-VK_API = "https://api.vk.com/method/"
+VK_API = "https://api.vk.ru/method/"
 VK_VERSION = "5.199"
 THREADS_API = "https://graph.threads.net/v1.0/"
 INSTAGRAM_API = "https://graph.facebook.com/v21.0/"
@@ -32,6 +32,7 @@ class PublishResult:
     platform: str
     url: str = ""
     external_id: str = ""
+    note: str = ""  # предупреждение (например, VK принял только текст)
 
 
 class PublishError(Exception):
@@ -159,20 +160,27 @@ class VKPublisher:
         group = {"group_id": abs(owner)} if owner < 0 else {}
         plain = html_to_plain(text)
         attachments: list[str] = []
+        degraded = ""
         try:
             async with _http(self.client) as c:
-                for i, img in enumerate(images):
-                    srv = await self._call(c, "photos.getWallUploadServer", **group)
-                    up = await self._upload(c, srv["upload_url"], "photo", f"image{i}.jpg", img)
-                    saved = (await self._call(c, "photos.saveWallPhoto", server=up["server"], photo=up["photo"],
-                                              hash=up["hash"], **group))
-                    p = saved[0] if isinstance(saved, list) else saved
-                    attachments.append(f"photo{p.get('owner_id', owner)}_{p['id']}")
-                if video_path:
-                    name = (plain.splitlines() or [""])[0][:128] or "Видео"
-                    srv = await self._call(c, "video.save", name=name, wallpost=0, **group)
-                    await self._upload(c, srv["upload_url"], "video_file", Path(video_path).name, Path(video_path).read_bytes())
-                    attachments.append(f"video{srv.get('owner_id', owner)}_{srv['video_id']}")
+                try:
+                    for i, img in enumerate(images):
+                        srv = await self._call(c, "photos.getWallUploadServer", **group)
+                        up = await self._upload(c, srv["upload_url"], "photo", f"image{i}.jpg", img)
+                        saved = (await self._call(c, "photos.saveWallPhoto", server=up["server"], photo=up["photo"],
+                                                  hash=up["hash"], **group))
+                        p = saved[0] if isinstance(saved, list) else saved
+                        attachments.append(f"photo{p.get('owner_id', owner)}_{p['id']}")
+                    if video_path:
+                        name = (plain.splitlines() or [""])[0][:128] or "Видео"
+                        srv = await self._call(c, "video.save", name=name, wallpost=0, **group)
+                        await self._upload(c, srv["upload_url"], "video_file", Path(video_path).name, Path(video_path).read_bytes())
+                        attachments.append(f"video{srv.get('owner_id', owner)}_{srv['video_id']}")
+                except PublishError as e:
+                    # Токен сообщества в 2026 не даёт загружать фото/видео (error 27 / «permission») — публикуем хотя бы текст
+                    if not any(w in str(e).lower() for w in ("permission", "access denied", "error 27", "(27)", "method is unavailable")):
+                        raise
+                    attachments, degraded = [], str(e)
                 params = {"owner_id": owner, "message": plain}
                 if owner < 0:
                     params["from_group"] = 1
@@ -184,7 +192,10 @@ class VKPublisher:
         pid = post.get("post_id")
         if not pid:
             raise PublishError("VK: нет post_id в ответе")
-        return PublishResult("vk", f"https://vk.com/wall{owner}_{pid}", str(pid))
+        res = PublishResult("vk", f"https://vk.com/wall{owner}_{pid}", str(pid))
+        if degraded:
+            res.note = f"VK принял только текст, медиа не загрузилось ({degraded[:120]}). Нужен пользовательский токен с правами photos/video."
+        return res
 
 
 class ThreadsPublisher:

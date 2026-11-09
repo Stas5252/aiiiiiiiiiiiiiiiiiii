@@ -24,7 +24,8 @@ async def publish_due(factory: ContentFactory, publishers: list, notify) -> int:
         if out.results:
             links = ", ".join(f"{API_PLATFORMS.get(r.platform, r.platform)}" + (f' <a href="{html.escape(r.url)}">↗</a>' if r.url else "")
                               for r in out.results)
-            await notify(f"✅ #{row['id']} «{html.escape(row['title'] or row['topic'])}» опубликован: {links}")
+            notes = "".join(f"\n⚠️ {html.escape(r.note)}" for r in out.results if getattr(r, "note", ""))
+            await notify(f"✅ #{row['id']} «{html.escape(row['title'] or row['topic'])}» опубликован: {links}{notes}")
         else:
             await factory.store.schedule(row["id"], None)
             await notify(f"⚠️ #{row['id']} не опубликовался, вернул в черновики:\n" + "\n".join(html.escape(e) for e in out.errors))
