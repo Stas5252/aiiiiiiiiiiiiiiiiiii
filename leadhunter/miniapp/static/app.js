@@ -4,7 +4,12 @@ const initData = tg?.initData || new URLSearchParams(location.search).get("initD
 const inTelegram = Boolean(tg?.initData);
 if (tg) {
   tg.ready(); tg.expand();
-  try { tg.disableVerticalSwipes?.(); tg.setHeaderColor?.("secondary_bg_color"); tg.setBackgroundColor?.("secondary_bg_color"); } catch (_) {}
+  // Строго ч/б: тему задаёт colorScheme Telegram, а не цвета темы
+  const applyTheme = () => { const c = tg.colorScheme === "dark" ? "dark" : "light", hex = c === "dark" ? "#000000" : "#ffffff";
+    document.documentElement.dataset.theme = c;
+    try { tg.setHeaderColor?.(hex); tg.setBackgroundColor?.(hex); tg.setBottomBarColor?.(hex); } catch (_) {} };
+  try { tg.disableVerticalSwipes?.(); } catch (_) {}
+  applyTheme(); tg.onEvent?.("themeChanged", applyTheme);
 }
 
 const $ = (s, r = document) => r.querySelector(s);

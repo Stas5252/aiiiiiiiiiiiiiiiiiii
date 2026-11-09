@@ -64,6 +64,17 @@ async def run() -> None:
     dp.include_router(build_callbacks(deps))
     dp.include_router(build_content_router(deps))
     deps.extra["pipeline"] = pipeline
+
+    tunnel = None
+    if s.miniapp_tunnel == "cloudflare" and not s.miniapp_url:
+        from .tunnel import CloudflareTunnel
+        tunnel = CloudflareTunnel(s.miniapp_port)
+        try:
+            s.miniapp_url = await tunnel.start() + "/app"
+        except Exception as e:
+            log.error("туннель не поднялся, Mini App выключен: %s", e)
+            tunnel = None
+    deps.extra["miniapp_url"] = s.miniapp_url
     factory = await build_content(s, db, bot, llm, deps, tg_notifier)
 
     tasks = [asyncio.create_task(src.run(pipeline.handle), name=src.name) for src in sources]
@@ -81,6 +92,8 @@ async def run() -> None:
     finally:
         for t in tasks:
             t.cancel()
+        if tunnel:
+            await tunnel.stop()
         await db.close()
 
 

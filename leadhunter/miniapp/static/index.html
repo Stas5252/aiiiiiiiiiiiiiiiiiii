@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>LeadHunter</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="/static/app.css">
@@ -14,7 +16,7 @@
   <section id="screen-today" class="screen active">
     <header class="top">
       <h1>Сегодня</h1>
-      <button class="icon" id="open-settings" aria-label="Настройки">⚙︎</button>
+      <button class="icon" id="open-settings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
     </header>
     <div id="today-kpi" class="kpi-row"></div>
     <div id="today-alert" class="alert hidden"></div>
@@ -162,10 +164,10 @@
   </section>
 
   <nav class="tabbar">
-    <button data-screen="today" class="on"><span class="ic">◉</span>Сегодня</button>
-    <button data-screen="leads"><span class="ic">☰</span>Лиды</button>
-    <button data-screen="stats"><span class="ic">◔</span>Отчёт</button>
-    <button data-screen="content"><span class="ic">✎</span>Контент</button>
+    <button data-screen="today" class="on"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></span>Сегодня</button>
+    <button data-screen="leads"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></svg></span>Лиды</button>
+    <button data-screen="stats"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V11M12 20V4M19 20v-6"/></svg></span>Отчёт</button>
+    <button data-screen="content"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6M9 13h6M9 17h3"/></svg></span>Контент</button>
   </nav>
 
   <!-- Шторка лида -->

@@ -92,10 +92,13 @@ class ContentGenerator:
             edits_txt = ("Как владелец правил предыдущие тексты (учись на этом: пиши сразу как в «стало»):\n"
                          + "\n".join(f"БЫЛО: {a[:400]}\nСТАЛО: {b[:400]}" for a, b in edits) + "\n")
         pains_txt = ""
-        if kind in ("ideas", "post", "carousel", "reel"):
+        if kind in ("ideas", "post", "carousel", "reel", "toon"):
             pains = await self.pains()
             if pains:
                 pains_txt = "Боли и запросы клиентов за последние 2 недели:\n" + "\n".join(f"- {p}" for p in pains) + "\n"
+            pillars = await self.db.get_setting("pillars", "")
+            if pillars:
+                pains_txt += f"Рубрики контента (чередуй их): {pillars}\n"
         return SYSTEM.format(profile=profile, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
 
     async def generate(self, kind: str, topic: str, *, platform: str = "", n: int = 7) -> dict:
