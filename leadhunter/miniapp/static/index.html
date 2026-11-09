@@ -18,6 +18,11 @@
       <h1>Сегодня</h1>
       <button class="icon" id="open-settings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
     </header>
+    <div id="today-setup" class="setup hidden">
+      <div class="setup-text"><div class="label">Осталось настроить</div><div id="today-setup-list" class="hint"></div></div>
+      <button class="setup-go" id="today-setup-go">Настроить</button>
+      <button class="setup-x" id="today-setup-x" aria-label="Скрыть">✕</button>
+    </div>
     <div id="today-kpi" class="kpi-row"></div>
     <div id="today-alert" class="alert hidden"></div>
     <h2 class="section-title">Нужно взять <span id="today-new-count" class="count"></span></h2>
@@ -122,6 +127,74 @@
         <div class="label">Что продаёте <span class="hint">— ИИ оценивает лидов по этому описанию</span></div>
         <textarea id="s-profile" rows="3"></textarea>
       </div>
+    </div>
+
+    <div class="card" id="card-niche">
+      <div class="card-title">Ниша</div>
+      <select id="s-niche"></select>
+      <p class="hint">Меняет профиль, фразы, словарь и рубрики</p>
+    </div>
+
+    <div class="card" id="card-fresh">
+      <div class="card-title">Свежесть бирж</div>
+      <div class="row-setting">
+        <div><div class="label">Возраст отклика</div><div class="hint" id="s-fh-txt">не старше 6 ч</div></div>
+        <div class="stepper"><button data-fstep="-0.5" data-f="h" aria-label="меньше">−</button><span id="s-fh">6</span><button data-fstep="0.5" data-f="h" aria-label="больше">+</button></div>
+      </div>
+      <div class="row-setting">
+        <div><div class="label">Конкуренция</div><div class="hint" id="s-fc-txt">не больше 20 откликов</div></div>
+        <div class="stepper"><button data-fstep="-5" data-f="c" aria-label="меньше">−</button><span id="s-fc">20</span><button data-fstep="5" data-f="c" aria-label="больше">+</button></div>
+      </div>
+      <p class="hint">Kwork, Weblancer, Freelance.ru, FL, hh — старое и перегретое не присылаю</p>
+    </div>
+
+    <div class="card" id="card-content">
+      <div class="card-title">Контент</div>
+      <div class="row-setting col">
+        <div class="label">Тон голоса</div>
+        <textarea id="s-voice" rows="3" placeholder="Коротко, по делу, без воды. На «вы», с лёгкой иронией"></textarea>
+      </div>
+      <div class="row-setting col">
+        <div class="label">Рубрики <span class="hint">— через «;»</span></div>
+        <input id="s-pillars" type="text" placeholder="кейсы; ошибки клиентов; цены">
+      </div>
+      <div class="row-setting">
+        <div><div class="label">Автопилот</div><div class="hint">каждый день черновик, публикую после вашего ✅</div></div>
+        <label class="switch"><input type="checkbox" id="s-autopilot"><span></span></label>
+      </div>
+      <div class="row-setting col">
+        <div class="label">Бренд</div>
+        <div class="pair">
+          <input id="s-brand-name" type="text" placeholder="Название" autocomplete="off">
+          <input id="s-brand-handle" type="text" placeholder="@ник" autocomplete="off">
+        </div>
+        <div class="pair">
+          <label class="color"><input type="color" id="s-brand-primary"><span><i>Основной</i><code id="s-brand-primary-hex">#000000</code></span></label>
+          <label class="color"><input type="color" id="s-brand-accent"><span><i>Акцент</i><code id="s-brand-accent-hex">#000000</code></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-platforms">
+      <div class="card-title">Площадки</div>
+      <div class="row-setting col">
+        <div class="label">Telegram-канал</div>
+        <input id="s-ch-telegram" type="text" placeholder="@канал" autocomplete="off" autocapitalize="off">
+      </div>
+      <div class="row-setting col">
+        <div class="label">VK <span class="hint">— id сообщества</span></div>
+        <input id="s-ch-vk" type="text" inputmode="numeric" placeholder="-123456" autocomplete="off">
+      </div>
+      <div class="row-setting col">
+        <div id="s-plat" class="rows"></div>
+        <p class="hint">ключи — в Подключениях ниже</p>
+      </div>
+    </div>
+
+    <div class="card" id="card-integ">
+      <div class="card-title">Подключения</div>
+      <p class="hint" id="s-integ-hint">Ключи проверяются живым запросом и начинают работать сразу, без перезапуска</p>
+      <div id="s-integ"></div>
     </div>
 
     <div class="card">

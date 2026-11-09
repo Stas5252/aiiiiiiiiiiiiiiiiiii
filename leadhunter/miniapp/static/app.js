@@ -293,7 +293,7 @@ async function loadContent() {
 /* ---------- Настройки ---------- */
 let S = null, saveT;
 function autosave(patch) { clearTimeout(saveT); saveT = setTimeout(async () => { try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500); }
-$$(".stepper button").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
+$$(".stepper button[data-step]").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
 $("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
 $("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
 $("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
