@@ -318,6 +318,12 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,))
         return list(await cur.fetchall())
 
+    async def undelivered_leads(self, limit: int = 20) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM leads WHERE msg_id IS NULL AND status = 'new' ORDER BY score DESC, id DESC LIMIT ?", (limit,)
+        )
+        return list(await cur.fetchall())
+
     async def leads_by_status(self, status: str, limit: int = 5) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
             "SELECT * FROM leads WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit)

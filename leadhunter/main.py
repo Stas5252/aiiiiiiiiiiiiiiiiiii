@@ -50,6 +50,8 @@ async def run() -> None:
     guard = Guard(bot, db, s.owner_ids)
     deps = BotDeps(db, sources, guard, phrases, tg_notifier.workspace, llm, s.profile, s.tg_outreach_limit,
                    s.followup_hours, s.digest_tz)
+    deps.extra["redeliver"] = tg_notifier.notify_row
+    deps.extra["threshold"] = s.score_threshold
     if tg:
         from .discovery import ChatDiscovery
         deps.discover = ChatDiscovery(tg, db, llm, s.discover_join_per_day)

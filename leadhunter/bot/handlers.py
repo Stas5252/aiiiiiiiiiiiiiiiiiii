@@ -71,11 +71,20 @@ def build_router(deps: BotDeps) -> Router:
 
     @router.message(Command("start"))
     async def start(m: Message):
+        first_owner = False
         if not deps.guard.static_owners and not await db.get_setting("owner_ids"):
             # Первый, кто написал боту, становится владельцем — дальше чужих игнорируем
             await db.set_setting("owner_ids", str(m.from_user.id))
-        if await allowed(m):
-            await m.answer(HELP)
+            first_owner = True
+        if not await allowed(m):
+            return
+        await m.answer(HELP)
+        # Лиды, собранные до появления владельца, досылаем — иначе они молча лежат в базе
+        undelivered = await db.undelivered_leads(20)
+        if undelivered and (first_owner or deps.extra.get("redeliver")):
+            await m.answer(f"Пока вас не было, нашёл {len(undelivered)} лидов — присылаю лучшие:")
+            for row in reversed(undelivered):
+                await deps.extra["redeliver"](row)
 
     @router.message(Command("help"))
     async def help_cmd(m: Message):
@@ -107,9 +116,12 @@ def build_router(deps: BotDeps) -> Router:
         for r in stats:
             by_user.setdefault(r["user_name"], {})[r["status"]] = r["n"]
         lines = ["<b>Команда</b> (нажмите любую кнопку в группе, чтобы попасть в неё):"]
-        for mem in members:
-            s = by_user.get(mem["name"], {})
-            lines.append(f"• {html.escape(mem['name'])} (id {mem['user_id']}): взял {s.get('taken', 0)}, "
+        names = {mem["name"]: mem["user_id"] for mem in members}
+        for name in by_user:  # владелец и те, кто действовал, но не в таблице команды
+            names.setdefault(name, None)
+        for name, uid in names.items():
+            s = by_user.get(name, {})
+            lines.append(f"• {html.escape(name)}{f' (id {uid})' if uid else ''}: взял {s.get('taken', 0)}, "
                          f"написал {s.get('contacted', 0)}, сделок {s.get('deal', 0)}")
         times = await db.response_times(7)
         if times:

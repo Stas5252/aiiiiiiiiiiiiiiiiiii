@@ -108,7 +108,7 @@ class TelegramNotifier:
     """Доставка: в форум-группу по темам (если настроена) и/или в личку владельцам."""
 
     def __init__(self, bot: Bot, db: Database, owner_ids: list[int], *, outreach_enabled: bool = False,
-                 hot_score: int = 8, deliver_dm: bool = True):
+                 hot_score: int = 8, deliver_dm: bool = False):
         self.bot = bot
         self.db = db
         self.static_owners = owner_ids
@@ -141,6 +141,24 @@ class TelegramNotifier:
                 log.exception("не удалось отправить в группу")
         for chat_id in await self.owners():
             await self._send_dm(chat_id, text, **kwargs)
+
+    async def notify_row(self, row) -> None:
+        """Повторная доставка лида из базы (например, накопленного до появления владельца)."""
+        import json
+        from datetime import datetime
+
+        from ..scoring import ScoreResult
+
+        matched = json.loads(row["matched"] or "{}")
+        res = ScoreResult(row["score"], matched.get("topic", []), matched.get("intent", []), matched.get("negative", []))
+        lead = Lead(source=row["source"], external_id=row["external_id"], text=row["text"] or "", url=row["url"] or "",
+                    title=row["title"] or "", author=row["author"] or "", contact=row["contact"] or "",
+                    found_at=datetime.fromisoformat(row["found_at"]),
+                    extra={"chat_key": row["chat_key"], "chat_title": row["chat_title"]})
+        info = Enriched(row["score"], res, summary=row["summary"], service=row["service"] or "", budget=row["budget"] or "",
+                        urgency=row["urgency"] or "", draft=row["draft"] or "", rule=row["rule"] or "",
+                        author_bio=row["author_bio"] or "")
+        await self.notify(row["id"], lead, info)
 
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None:
         can_send = (self.outreach_enabled and lead.source == "telegram" and bool(info.draft)
