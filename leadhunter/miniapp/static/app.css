@@ -1,0 +1,76 @@
+:root {
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --fg: var(--tg-theme-text-color, #111);
+  --hint: var(--tg-theme-hint-color, #777);
+  --link: var(--tg-theme-link-color, #2481cc);
+  --btn: var(--tg-theme-button-color, #2481cc);
+  --btn-fg: var(--tg-theme-button-text-color, #fff);
+  --card: var(--tg-theme-secondary-bg-color, #f3f4f6);
+  --ok: #2e9e5b; --warn: #d98c00; --hot: #e5484d;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.4 -apple-system, system-ui, Roboto, sans-serif; background: var(--bg); color: var(--fg); padding-bottom: 40px; }
+header { position: sticky; top: 0; background: var(--bg); z-index: 5; padding: 10px 12px 0; border-bottom: 1px solid var(--card); }
+.brand { font-weight: 700; font-size: 18px; margin-bottom: 6px; }
+nav { display: flex; gap: 4px; }
+nav button { flex: 1; border: 0; background: transparent; color: var(--hint); padding: 8px 0; font-size: 15px; border-bottom: 2px solid transparent; }
+nav button.active { color: var(--fg); border-color: var(--btn); font-weight: 600; }
+main { padding: 10px 12px; }
+.tab { display: none; } .tab.active { display: block; }
+button { font: inherit; border-radius: 10px; border: 1px solid var(--card); background: var(--card); color: var(--fg); padding: 8px 12px; cursor: pointer; }
+button.primary { background: var(--btn); color: var(--btn-fg); border-color: var(--btn); }
+button.ghost { width: 100%; margin-top: 8px; }
+input, textarea, select { font: inherit; width: 100%; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--card); background: var(--bg); color: var(--fg); }
+label { display: block; margin: 8px 0; font-size: 14px; color: var(--hint); }
+label input, label textarea { margin-top: 4px; color: var(--fg); }
+label.row { display: flex; align-items: center; gap: 8px; } label.row input { width: auto; margin: 0; }
+.row { display: flex; gap: 6px; align-items: center; margin-top: 6px; } .row input, .row select { flex: 1; }
+label.row input[type=checkbox] { flex: 0 0 auto; }
+.filters { display: grid; gap: 6px; margin-bottom: 8px; }
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.chips button { white-space: nowrap; padding: 6px 10px; font-size: 13px; }
+.chips button.on { background: var(--btn); color: var(--btn-fg); border-color: var(--btn); }
+.mine { font-size: 13px; display: flex; align-items: center; gap: 6px; } .mine input { width: auto; margin: 0; }
+.list { display: grid; gap: 8px; }
+.lead { background: var(--card); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+.lead .head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--hint); margin-bottom: 4px; }
+.lead .score { font-weight: 700; color: var(--fg); }
+.lead .score.hot { color: var(--hot); }
+.lead .title { font-weight: 600; margin-bottom: 2px; }
+.lead .text { font-size: 14px; color: var(--fg); opacity: .85; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.lead, .sheet, .table .tr span, .kw, .lead .title { overflow-wrap: anywhere; min-width: 0; }
+.lead .meta { margin-top: 6px; font-size: 12px; color: var(--hint); display: flex; gap: 8px; flex-wrap: wrap; }
+.badge { padding: 1px 7px; border-radius: 8px; background: var(--bg); font-size: 12px; }
+.badge.deal { background: var(--ok); color: #fff; } .badge.taken, .badge.contacted { background: var(--warn); color: #fff; }
+.badge.spam, .badge.lost { opacity: .6; }
+.card { background: var(--card); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+.hint { font-size: 12px; color: var(--hint); margin: 0 0 6px; }
+ul.plain { list-style: none; padding: 0; margin: 0; } ul.plain li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--bg); font-size: 14px; }
+ul.plain li button { padding: 2px 8px; font-size: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.kpi { background: var(--card); border-radius: 12px; padding: 10px; text-align: center; }
+.kpi b { display: block; font-size: 22px; } .kpi span { font-size: 12px; color: var(--hint); }
+h3 { margin: 14px 0 6px; font-size: 15px; }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 90px; background: var(--card); border-radius: 12px; padding: 8px; }
+.bars div { flex: 1; background: var(--btn); border-radius: 3px 3px 0 0; min-height: 2px; position: relative; }
+.bars div[title]:hover::after { content: attr(title); position: absolute; bottom: 100%; left: 0; font-size: 11px; background: var(--fg); color: var(--bg); padding: 2px 5px; border-radius: 4px; white-space: nowrap; }
+.table { background: var(--card); border-radius: 12px; padding: 6px 10px; font-size: 13px; }
+.table .tr { display: grid; grid-template-columns: 1fr repeat(5, 36px); gap: 2px; padding: 5px 0; border-bottom: 1px solid var(--bg); align-items: center; }
+.table .tr.th { color: var(--hint); font-size: 13px; }
+.table .tr span:not(:first-child) { text-align: right; }
+.table .tr span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table .tr b { color: var(--ok); }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: flex-end; z-index: 10; }
+.modal.hidden, .toast.hidden { display: none; }
+.sheet { background: var(--bg); width: 100%; max-height: 92vh; overflow: auto; border-radius: 16px 16px 0 0; padding: 14px 14px 30px; position: relative; }
+.sheet .close { position: absolute; right: 10px; top: 10px; padding: 4px 9px; }
+.sheet h2 { margin: 0 30px 8px 0; font-size: 17px; }
+.sheet pre { white-space: pre-wrap; font: inherit; background: var(--card); padding: 10px; border-radius: 10px; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.actions button { flex: 1 1 45%; }
+.events { font-size: 12px; color: var(--hint); }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 10px; z-index: 20; font-size: 14px; }
+.kw { display: inline-block; margin: 2px; padding: 2px 8px; background: var(--bg); border-radius: 8px; font-size: 13px; }
+.kw button { padding: 0 4px; border: 0; background: transparent; color: var(--hint); }
+.empty { color: var(--hint); text-align: center; padding: 30px 0; }

@@ -46,6 +46,31 @@ class TelegramChatsSource(Source):
         self.search_words = s.tg_search_words
         self.interval = s.tg_search_interval
         self.me_id: int | None = None
+        # Хуки: статистика сообщений по чатам (chat_key, title, messages, leads)
+        self.on_message_stats = None
+        self._bio_cache: dict[int, str] = {}
+
+    async def get_bio(self, user_id: int) -> str:
+        """Bio автора — ИИ по нему понимает, бизнес это или частник."""
+        if user_id in self._bio_cache:
+            return self._bio_cache[user_id]
+        try:
+            full = await self.client(functions.users.GetFullUserRequest(user_id))
+            bio = (full.full_user.about or "").strip()
+        except Exception:
+            bio = ""
+        if len(self._bio_cache) > 5000:
+            self._bio_cache.clear()
+        self._bio_cache[user_id] = bio
+        return bio
+
+    async def recent_messages(self, chat, limit: int = 50) -> list[str]:
+        """Последние сообщения чата — для оценки, есть ли там заказчики."""
+        out = []
+        async for m in self.client.iter_messages(chat, limit=limit):
+            if m.raw_text:
+                out.append(m.raw_text)
+        return out
 
     def _to_lead(self, message, chat, sender) -> Lead:
         author, contact = sender_info(sender)
@@ -59,7 +84,8 @@ class TelegramChatsSource(Source):
             author=author,
             contact=contact,
             found_at=message.date or datetime.now(timezone.utc),
-            extra={"chat_key": str(getattr(chat, "id", "")), "chat_title": chat_title},
+            extra={"chat_key": str(getattr(chat, "id", "")), "chat_title": chat_title,
+                   "sender_id": getattr(sender, "id", None)},
         )
 
     # --- управление из бота ---
@@ -118,6 +144,11 @@ class TelegramChatsSource(Source):
             if isinstance(sender, User) and (sender.bot or sender.id == self.me_id):
                 return
             chat = await event.get_chat()
+            if self.on_message_stats:
+                try:
+                    await self.on_message_stats(str(chat.id), getattr(chat, "title", "") or "", 1, 0)
+                except Exception:
+                    log.debug("chat stats failed", exc_info=True)
             await emit(self._to_lead(event.message, chat, sender))
 
         asyncio.create_task(self._search_loop(emit))

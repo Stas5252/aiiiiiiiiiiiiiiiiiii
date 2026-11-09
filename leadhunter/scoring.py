@@ -66,4 +66,4 @@ def score_text(text: str, kw: Keywords, intent_implied: bool = False) -> ScoreRe
         return ScoreResult(0, topic, intent, negative, services)
     intent_hits = max(len(intent), 1 if intent_implied else 0)
     score = min(len(topic), 3) * 2 + min(intent_hits, 2) * 3 - len(negative) * 3
-    return ScoreResult(max(score, 0), topic, intent, negative, services)
+    return ScoreResult(max(0, min(score, 10)), topic, intent, negative, services)

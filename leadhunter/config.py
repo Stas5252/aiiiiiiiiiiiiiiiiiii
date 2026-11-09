@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     # Вебхук для CRM / n8n / Google Sheets: POST JSON с каждым лидом
     webhook_url: str | None = None
 
+    # Рабочая группа и команда
+    hot_score: int = 8  # с этого балла лид идёт в «🔥 Горячие» со звуком
+    deliver_dm: bool = False  # дублировать лидов владельцам в личку, даже если настроена группа
+    sla_minutes: int = 10  # лид не взят столько минут → пинг в «Горячие»
+    sla_min_score: int = 7  # SLA считаем только для лидов с таким баллом и выше
+    followup_hours: int = 24  # напомнить, если после «Написал» нет ответа
+    spam_chats_per_hour: int = 3  # автор засветился в стольких чатах за час → рассылка, игнорируем
+    discover_join_per_day: int = 5  # автопоиск чатов: сколько вступать в день
+
+    # Mini App (кабинет внутри Telegram): публичный HTTPS-адрес, где доступен этот сервер
+    miniapp_url: str | None = None
+    miniapp_port: int = 8080
+
     # Telegram-аккаунт (Telethon) для чтения чатов. Бот сам в чужие чаты не попадёт.
     tg_api_id: int | None = None
     tg_api_hash: str | None = None
