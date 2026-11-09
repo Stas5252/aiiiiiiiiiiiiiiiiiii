@@ -5,11 +5,14 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from .bot.callbacks import build_callbacks
+from .bot.content import build_content_router
 from .bot.guard import Guard
 from .bot.handlers import BotDeps, build_router
 from .bot.notify import TelegramNotifier
 from .bot.workspace import Workspace
 from .config import Settings
+from .content.runtime import build_content
+from .content.scheduler import autopilot_loop, content_loop
 from .db import Database
 from .llm import LLMClassifier
 from .loops import digest_loop, followup_loop, sla_loop
@@ -59,10 +62,15 @@ async def run() -> None:
     dp = Dispatcher()
     dp.include_router(build_router(deps))
     dp.include_router(build_callbacks(deps))
+    dp.include_router(build_content_router(deps))
+    deps.extra["pipeline"] = pipeline
+    factory = await build_content(s, db, bot, llm, deps, tg_notifier)
 
     tasks = [asyncio.create_task(src.run(pipeline.handle), name=src.name) for src in sources]
     tasks.append(asyncio.create_task(sla_loop(db, tg_notifier, s.sla_minutes, s.sla_min_score), name="sla"))
     tasks.append(asyncio.create_task(followup_loop(db, tg_notifier), name="followup"))
+    tasks.append(asyncio.create_task(content_loop(factory, deps.extra["publishers"], deps.extra["content_notify"]), name="content"))
+    tasks.append(asyncio.create_task(autopilot_loop(factory, deps.extra["deliver_to_team"], s.digest_tz, s.content_hour), name="autopilot"))
     if s.digest_hour is not None:
         tasks.append(asyncio.create_task(digest_loop(db, tg_notifier, s.digest_hour, s.digest_tz), name="digest"))
     if s.miniapp_url:

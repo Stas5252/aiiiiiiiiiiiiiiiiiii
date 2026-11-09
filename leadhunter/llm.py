@@ -61,21 +61,27 @@ class LLMClassifier:
         self._calls.append(now)
         return True
 
-    async def classify(self, text: str, profile: str, good: list[str] = (), bad: list[str] = ()) -> Verdict | None:
+    async def complete_json(self, system: str, user: str, *, temperature: float = 0.7,
+                            max_tokens: int | None = None) -> dict:
+        """Любой запрос «верни JSON» — на нём работают контент-фабрика и генерация фраз. Бросает исключение при ошибке."""
         if not self._allowed():
-            log.warning("LLM: лимит %d вызовов/час исчерпан, работаем по словарю", self.max_per_hour)
-            return None
-        system = SYSTEM.format(profile=profile, examples=build_examples(list(good), list(bad)))
+            raise RuntimeError(f"лимит {self.max_per_hour} вызовов ИИ в час исчерпан")
         payload = {
             "model": self.model,
-            "temperature": 0,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": text[:4000]}],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user[:12000]}],
         }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+        r = await self.client.post("/chat/completions", json=payload)
+        r.raise_for_status()
+        return json.loads(r.json()["choices"][0]["message"]["content"])
+
+    async def classify(self, text: str, profile: str, good: list[str] = (), bad: list[str] = ()) -> Verdict | None:
+        system = SYSTEM.format(profile=profile, examples=build_examples(list(good), list(bad)))
         try:
-            r = await self.client.post("/chat/completions", json=payload)
-            r.raise_for_status()
-            data = json.loads(r.json()["choices"][0]["message"]["content"])
+            data = await self.complete_json(system, text[:4000], temperature=0)
             return Verdict(
                 is_lead=bool(data.get("is_lead")),
                 score=max(0, min(10, int(data.get("score") or 0))),

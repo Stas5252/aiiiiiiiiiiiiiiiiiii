@@ -142,6 +142,17 @@ class Settings(BaseSettings):
     digest_hour: int | None = 9
     digest_tz: str = "Europe/Moscow"
 
+    # === Контент-фабрика ===
+    content_dir: str = "data/content"
+    content_hour: int = 10  # автопилот приносит черновик в этот час
+    image_model: str = ""  # gpt-image-1 / dall-e-3; пусто = обложки по шаблону (без ИИ)
+    tts_model: str = ""  # tts-1 / gpt-4o-mini-tts; пусто = видео без озвучки
+    tts_voice: str = "alloy"
+    threads_user_id: str | None = None  # публикация в Threads (вместе с THREADS_ACCESS_TOKEN)
+    yt_client_id: str | None = None  # YouTube Shorts: OAuth-приложение + refresh token
+    yt_client_secret: str | None = None
+    yt_refresh_token: str | None = None
+
     @field_validator("owner_ids", mode="before")
     @classmethod
     def _split_ints(cls, v):

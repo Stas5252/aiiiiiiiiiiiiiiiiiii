@@ -8,7 +8,9 @@ from aiohttp import web
 
 from ..db import Database
 from ..filters import parse_rule
+from ..models import Lead
 from .auth import validate_init_data
+from .landing import render_landing, render_thanks
 
 log = logging.getLogger(__name__)
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -217,6 +219,129 @@ class MiniAppAPI:
     async def index(self, request):
         return web.FileResponse(os.path.join(STATIC, "index.html"))
 
+    # --- контент-фабрика ---
+    @property
+    def factory(self):
+        f = self.deps.extra.get("factory")
+        if not f:
+            raise web.HTTPServiceUnavailable(text="контент-фабрика не инициализирована")
+        return f
+
+    def _content_row(self, r) -> dict:
+        from ..content.factory import compose_text
+        from ..content.store import media_json
+
+        d = dict(r)
+        media = media_json(r)
+        store = self.factory.media
+        d["images"] = [store.url(n) or f"/media/{n}" for n in media.get("images") or []]
+        d["video"] = (store.url(media["video"]) or f"/media/{media['video']}") if media.get("video") else None
+        d["text"] = compose_text(r)
+        d["published"] = json.loads(r["published"] or "[]")
+        return d
+
+    async def content_list(self, request):
+        await self.user(request)
+        q = request.query
+        rows = await self.factory.store.recent(min(int(q.get("limit", 50)), 200), status=q.get("status") or None,
+                                               kind=q.get("kind") or None)
+        return web.json_response({"items": [self._content_row(r) for r in rows if r["kind"] != "idea" or q.get("kind") == "idea"]})
+
+    async def content_item(self, request):
+        await self.user(request)
+        row = await self.factory.store.get(int(request.match_info["id"]))
+        if not row:
+            raise web.HTTPNotFound()
+        return web.json_response({"item": self._content_row(row)})
+
+    async def content_generate(self, request):
+        user = await self.user(request)
+        body = await request.json()
+        kind, topic = body.get("kind", "post"), (body.get("topic") or "").strip()
+        if kind not in ("post", "carousel", "reel", "magnet") or not topic:
+            raise web.HTTPBadRequest(text="нужны kind и topic")
+        try:
+            row = await self.factory.create(kind, topic, created_by=self._name(user))
+        except Exception as e:
+            raise web.HTTPBadRequest(text=str(e)[:300])
+        return web.json_response({"item": self._content_row(row)})
+
+    async def content_action(self, request):
+        """action: publish | schedule (at: ISO) | draft | reject | edit (body/caption/hashtags)."""
+        await self.user(request)
+        item_id = int(request.match_info["id"])
+        row = await self.factory.store.get(item_id)
+        if not row:
+            raise web.HTTPNotFound()
+        body = await request.json()
+        action = body.get("action")
+        if action == "publish":
+            pubs = await self.deps.extra["publishers"]() if self.deps.extra.get("publishers") else []
+            if not pubs:
+                raise web.HTTPBadRequest(text="площадки не настроены")
+            out = await self.factory.publish(row, pubs)
+            return web.json_response({"item": self._content_row(await self.factory.store.get(item_id)),
+                                      "results": [{"platform": r.platform, "url": r.url} for r in out.results],
+                                      "errors": out.errors})
+        if action == "schedule":
+            try:
+                at = datetime.fromisoformat(body["at"])
+            except (KeyError, ValueError, TypeError):
+                raise web.HTTPBadRequest(text="нужно время at в ISO")
+            if at.tzinfo is None:
+                from zoneinfo import ZoneInfo
+                at = at.replace(tzinfo=ZoneInfo(self.deps.tz))
+            await self.factory.store.schedule(item_id, at)
+        elif action == "draft":
+            await self.factory.store.schedule(item_id, None)
+        elif action == "reject":
+            await self.factory.store.update(item_id, status="rejected")
+        elif action == "edit":
+            fields = {}
+            for k in ("body", "caption"):
+                if isinstance(body.get(k), str):
+                    await self.factory.store.add_edit(item_id, row["kind"], row[k] or "", body[k])
+                    fields[k] = body[k]
+            if "hashtags" in body:
+                fields["hashtags"] = body["hashtags"]
+            await self.factory.store.update(item_id, **fields)
+        else:
+            raise web.HTTPBadRequest(text="bad action")
+        return web.json_response({"item": self._content_row(await self.factory.store.get(item_id))})
+
+    async def content_channels(self, request):
+        await self.user(request)
+        pubs = await self.deps.extra["publishers"]() if self.deps.extra.get("publishers") else []
+        return web.json_response({"channels": [{"platform": p.platform, "label": p.label} for p in pubs]})
+
+    # --- публичный лендинг лид-магнита: заявка превращается в горячий лид ---
+    async def landing(self, request):
+        row = await self.factory.store.by_slug(request.match_info["slug"])
+        if not row or row["status"] == "rejected":
+            raise web.HTTPNotFound(text="страница не найдена")
+        from ..content.store import body_json
+        return web.Response(text=render_landing(row, body_json(row), await self.factory.brand()), content_type="text/html")
+
+    async def landing_submit(self, request):
+        slug = request.match_info["slug"]
+        row = await self.factory.store.by_slug(slug)
+        if not row:
+            raise web.HTTPNotFound()
+        form = await request.post()
+        name = str(form.get("name", "")).strip()[:100]
+        contact = str(form.get("contact", "")).strip()[:100]
+        message = str(form.get("message", "")).strip()[:1000]
+        if not contact or str(form.get("website", "")):  # website — скрытое поле-ловушка для ботов
+            raise web.HTTPBadRequest(text="укажите контакт")
+        n = await self.factory.store.add_landing_lead(slug, name, contact, message, None)
+        pipeline = self.deps.extra.get("pipeline")
+        if pipeline:
+            text = (f"Заявка с лендинга «{row['title'] or row['topic']}»" + (f": {message}" if message else "")
+                    + f"\nИмя: {name or '—'}. Хочет получить материал и консультацию.")
+            await pipeline.handle(Lead(source="landing", external_id=f"{slug}:{n}", text=text, title=row["title"] or "",
+                                       author=name, contact=contact, preset_score=9))
+        return web.Response(text=render_thanks(row, await self.factory.brand()), content_type="text/html")
+
 
 def build_app(api: MiniAppAPI) -> web.Application:
     app = web.Application()
@@ -237,6 +362,15 @@ def build_app(api: MiniAppAPI) -> web.Application:
     r.add_post("/api/keywords", api.keyword_add)
     r.add_delete("/api/keywords/{word}", api.keyword_del)
     r.add_delete("/api/ignored/{key}", api.ignored_del)
+    r.add_get("/api/content", api.content_list)
+    r.add_post("/api/content", api.content_generate)
+    r.add_get("/api/content/channels", api.content_channels)
+    r.add_get(r"/api/content/{id:\d+}", api.content_item)
+    r.add_post(r"/api/content/{id:\d+}", api.content_action)
+    r.add_get("/lp/{slug}", api.landing)
+    r.add_post("/lp/{slug}", api.landing_submit)
+    if api.deps.extra.get("factory"):
+        app.router.add_static("/media/", api.deps.extra["factory"].media.root, show_index=False)
 
     @web.middleware
     async def errors(request, handler):
