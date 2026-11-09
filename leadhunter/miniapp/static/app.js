@@ -1,160 +1,281 @@
+/* LeadHunter Mini App — три экрана, одна шторка, минимум кнопок. */
 const tg = window.Telegram?.WebApp;
-tg?.ready(); tg?.expand();
 const initData = tg?.initData || new URLSearchParams(location.search).get("initData") || "";
-const $ = (s) => document.querySelector(s);
+const inTelegram = Boolean(tg?.initData);
+if (tg) {
+  tg.ready(); tg.expand();
+  try { tg.disableVerticalSwipes?.(); tg.setHeaderColor?.("secondary_bg_color"); tg.setBackgroundColor?.("secondary_bg_color"); } catch (_) {}
+}
+
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const ICONS = { telegram: "✈️", threads: "🧵", instagram: "📸", yandex_maps: "🗺", site_audit: "🩺", "hh.ru": "💼", vk: "🔵", rss: "📋", web: "🌐", kwork: "🟢", weblancer: "🟣", "freelance.ru": "🟠" };
-const STATUS = { new: "новый", taken: "в работе", contacted: "написали", replied: "ответил", deal: "🤝 сделка", lost: "отказ", spam: "не лид", hot: "🔥 горячий" };
+const SRC = { telegram: "Telegram", threads: "Threads", instagram: "Instagram", yandex_maps: "Яндекс.Карты", site_audit: "Аудит сайта", "hh.ru": "hh.ru", vk: "VK", kwork: "Kwork", weblancer: "Weblancer", "freelance.ru": "Freelance.ru", web: "Поиск" };
+const STATUS = { new: "новый", taken: "в работе", contacted: "написали", replied: "ответил", deal: "сделка", lost: "отказ", spam: "не лид", hot: "горячий" };
+const SERVICE = { "сайт": "Сайт", "бот": "Бот", "автоматизация": "Автоматизация", "мультик": "Видео" };
+const srcName = (s) => SRC[s.split(":")[0]] || (s.startsWith("rss:") ? s.slice(4) : s);
+const fmtTime = (iso) => { const d = new Date(iso), now = new Date(); const diff = (now - d) / 60000;
+  if (diff < 1) return "только что"; if (diff < 60) return `${Math.floor(diff)} мин`; if (diff < 24 * 60) return `${Math.floor(diff / 60)} ч`;
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }); };
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Init-Data": initData, ...(opts.headers || {}) } });
+  const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Init-Data": initData } });
   if (!r.ok) { const e = await r.json().catch(() => ({ error: r.statusText })); throw new Error(e.error || r.statusText); }
   return r.json();
 }
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 2200); }
-function haptic(type = "light") { tg?.HapticFeedback?.impactOccurred(type); }
+let toastTimer;
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hidden"), 2000); }
+const haptic = { tap: () => tg?.HapticFeedback?.impactOccurred("light"), ok: () => tg?.HapticFeedback?.notificationOccurred("success"), err: () => tg?.HapticFeedback?.notificationOccurred("error"), sel: () => tg?.HapticFeedback?.selectionChanged() };
 
-// ---------- tabs ----------
-document.querySelectorAll("nav button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("active", x === b));
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + b.dataset.tab));
-  if (b.dataset.tab === "stats") loadStats();
-  if (b.dataset.tab === "settings") loadSettings();
-});
-
-// ---------- leads ----------
-const state = { status: "open", service: "", q: "", mine: false, offset: 0 };
-function chips(sel, key) {
-  document.querySelectorAll(sel + " button").forEach((b) => b.onclick = () => {
-    document.querySelectorAll(sel + " button").forEach((x) => x.classList.toggle("on", x === b));
-    state[key] = b.dataset[key]; state.offset = 0; loadLeads();
-  });
+/* ---------- навигация ---------- */
+let me = null;
+const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, settings: loadSettings };
+let current = "today";
+function show(name) {
+  current = name;
+  $$(".screen").forEach((s) => s.classList.toggle("active", s.id === "screen-" + name));
+  $$(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.screen === name));
+  $(".tabbar").classList.toggle("hidden", name === "settings");
+  if (name === "settings") tg?.BackButton?.show(); else tg?.BackButton?.hide();
+  window.scrollTo(0, 0);
+  screens[name]?.();
 }
-chips("#status-chips", "status"); chips("#service-chips", "service");
-let qTimer; $("#q").oninput = (e) => { clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = e.target.value; state.offset = 0; loadLeads(); }, 300); };
-$("#mine").onchange = (e) => { state.mine = e.target.checked; state.offset = 0; loadLeads(); };
-$("#more").onclick = () => { state.offset += 50; loadLeads(true); };
+$$(".tabbar button").forEach((b) => b.onclick = () => { haptic.sel(); show(b.dataset.screen); });
+$("#open-settings").onclick = () => show("settings");
+$$("[data-back]").forEach((b) => b.onclick = () => show("today"));
+tg?.BackButton?.onClick(() => { if (!$("#sheet").classList.contains("hidden")) closeSheet(); else show("today"); });
 
-function leadCard(l) {
-  const hot = l.score >= 8 ? " hot" : "";
-  const when = new Date(l.created_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+/* ---------- карточка-строка лида ---------- */
+function leadRow(l, opts = {}) {
+  const cls = l.score >= 8 ? "hot" : l.score >= 6 ? "warm" : "";
+  const title = l.summary || l.title || l.text;
+  const sub = l.summary ? (l.title || l.text) : (l.title ? l.text : "");
+  const mine = me && l.assigned_name && opts.mineLabel;
   return `<div class="lead" data-id="${l.id}">
-    <div class="head"><span>${ICONS[l.source.split(":")[0]] || "📌"} ${esc(l.source)} · #${l.id} · ${when}</span><span class="score${hot}">${l.score}/10</span></div>
-    ${l.title ? `<div class="title">${esc(l.title)}</div>` : ""}
-    ${l.summary ? `<div class="text">🤖 ${esc(l.summary)}</div>` : `<div class="text">${esc(l.text)}</div>`}
-    <div class="meta">
-      <span class="badge ${esc(l.status)}">${STATUS[l.status] || esc(l.status)}</span>
-      ${l.service ? `<span>🎯 ${esc(l.service)}</span>` : ""}${l.budget ? `<span>💰 ${esc(l.budget)}</span>` : ""}
-      ${l.author ? `<span>👤 ${esc(l.author)}</span>` : ""}${l.assigned_name ? `<span>🙋 ${esc(l.assigned_name)}</span>` : ""}
+    <div class="under"><span class="l">👋 Беру</span><span class="r">Не лид</span></div>
+    <div class="inner">
+      <div class="score ${cls}">${l.score}</div>
+      <div class="body">
+        <div class="title">${esc(title)}</div>
+        ${sub ? `<div class="sub">${esc(sub)}</div>` : ""}
+        <div class="meta">
+          <span>${esc(srcName(l.source))}</span>
+          ${l.service ? `<span class="dot">${SERVICE[l.service] || esc(l.service)}</span>` : ""}
+          ${l.budget ? `<span class="dot">${esc(l.budget)}</span>` : ""}
+          <span class="dot">${fmtTime(l.created_at)}</span>
+          ${l.status !== "new" ? `<span class="badge ${esc(l.status)}">${STATUS[l.status] || l.status}${l.assigned_name && !mine ? " · " + esc(l.assigned_name) : ""}</span>` : ""}
+        </div>
+      </div>
     </div></div>`;
 }
+function bindRows(container) {
+  $$(".lead", container).forEach((el) => {
+    el.addEventListener("click", () => { if (!el.dataset.swiped) openLead(+el.dataset.id); });
+    swipe(el, +el.dataset.id);
+  });
+}
+/* свайп вправо — взять, влево — не лид */
+function swipe(el, id) {
+  const inner = $(".inner", el); let x0 = null, dx = 0, moved = false;
+  el.addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; dx = 0; moved = false; inner.style.transition = "none"; }, { passive: true });
+  el.addEventListener("touchmove", (e) => {
+    if (x0 == null) return; dx = e.touches[0].clientX - x0; if (Math.abs(dx) < 8) return; moved = true;
+    inner.style.transform = `translateX(${Math.max(-110, Math.min(110, dx))}px)`;
+    el.classList.toggle("swipe-l", dx > 40); el.classList.toggle("swipe-r", dx < -40);
+  }, { passive: true });
+  el.addEventListener("touchend", async () => {
+    inner.style.transition = ""; inner.style.transform = ""; el.classList.remove("swipe-l", "swipe-r");
+    if (moved) { el.dataset.swiped = "1"; setTimeout(() => delete el.dataset.swiped, 400); }
+    if (dx > 80) await act(id, "taken"); else if (dx < -80) await act(id, "spam");
+    x0 = null;
+  });
+}
+async function act(id, status) {
+  try {
+    await api(`/api/leads/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
+    haptic.ok(); toast({ taken: "Лид ваш", spam: "Скрыто", contacted: "Напомню через сутки", deal: "🎉 Сделка!", replied: "Отлично", lost: "Отказ", hot: "🔥 Отмечен" }[status] || "Готово");
+    refresh(); return true;
+  } catch (e) { haptic.err(); toast(e.message); return false; }
+}
+function refresh() { screens[current]?.(); }
+
+/* ---------- Сегодня ---------- */
+async function loadToday() {
+  try {
+    const [stats, newLeads, mine, meResp] = await Promise.all([
+      api("/api/stats?days=1"), api("/api/leads?status=new&limit=20"), api("/api/leads?status=open&mine=1&limit=20"), me ? Promise.resolve({ user: me }) : api("/api/me"),
+    ]);
+    me = meResp.user;
+    const total = Object.values(stats.by_status).reduce((a, b) => a + b, 0);
+    const kpi = (v, l, c = "") => `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`;
+    $("#today-kpi").innerHTML = kpi(total, "лидов за сутки") + kpi(stats.by_status.new || 0, "ждут", (stats.by_status.new || 0) > 5 ? "bad" : "")
+      + kpi(stats.response.median_min == null ? "—" : Math.round(stats.response.median_min) + " мин", "до «беру»", stats.response.median_min != null && stats.response.median_min <= 5 ? "good" : "");
+    const broken = stats.sources.filter((s) => s.includes("⚠️"));
+    $("#today-alert").classList.toggle("hidden", !broken.length);
+    if (broken.length) $("#today-alert").textContent = broken.map((s) => s.split(" — ")[0]).join(", ") + (broken.length > 1 ? " не работают" : " не работает") + " — смотрите Отчёт";
+    const hot = newLeads.leads.filter((l) => l.score >= 6), rest = newLeads.leads.filter((l) => l.score < 6);
+    $("#today-new-count").textContent = newLeads.leads.length || "";
+    $("#today-new").innerHTML = [...hot, ...rest].slice(0, 10).map((l) => leadRow(l)).join("") || `<div class="empty">Все лиды разобраны 👌</div>`;
+    const my = mine.leads.filter((l) => l.status !== "new");
+    $("#today-mine-count").textContent = my.length || "";
+    $("#today-mine").innerHTML = my.map((l) => leadRow(l, { mineLabel: true })).join("") || `<div class="empty">Свайпните лид вправо, чтобы взять</div>`;
+    bindRows($("#today-new")); bindRows($("#today-mine"));
+  } catch (e) { $("#today-new").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/* ---------- Лиды ---------- */
+const flt = { status: "open", service: "", q: "", offset: 0 };
+$$("#seg-status button").forEach((b) => b.onclick = () => { $$("#seg-status button").forEach((x) => x.classList.toggle("on", x === b)); flt.status = b.dataset.status; flt.offset = 0; haptic.sel(); loadLeads(); });
+$$("#chips-service button").forEach((b) => b.onclick = () => { $$("#chips-service button").forEach((x) => x.classList.toggle("on", x === b)); flt.service = b.dataset.service; flt.offset = 0; haptic.sel(); loadLeads(); });
+let qT; $("#q").oninput = (e) => { clearTimeout(qT); qT = setTimeout(() => { flt.q = e.target.value.trim(); flt.offset = 0; loadLeads(); }, 300); };
+$("#more").onclick = () => { flt.offset += 50; loadLeads(true); };
 async function loadLeads(append = false) {
-  const p = new URLSearchParams({ status: state.status, service: state.service, q: state.q, mine: state.mine ? 1 : 0, offset: state.offset, limit: 50 });
+  const p = new URLSearchParams({ status: flt.status, service: flt.service, q: flt.q, offset: flt.offset, limit: 50 });
   try {
     const { leads } = await api("/api/leads?" + p);
-    const list = $("#lead-list");
-    const html = leads.map(leadCard).join("") || (append ? "" : `<div class="empty">Лидов нет</div>`);
-    append ? list.insertAdjacentHTML("beforeend", html) : (list.innerHTML = html);
-    $("#more").style.display = leads.length < 50 ? "none" : "block";
-    list.querySelectorAll(".lead").forEach((el) => el.onclick = () => openLead(+el.dataset.id));
+    const list = $("#lead-list"), html = leads.map((l) => leadRow(l)).join("");
+    if (append) list.insertAdjacentHTML("beforeend", html); else list.innerHTML = html || `<div class="empty">Ничего не найдено</div>`;
+    $("#more-wrap").classList.toggle("hidden", leads.length < 50);
+    bindRows(list);
   } catch (e) { $("#lead-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
-async function openLead(id) {
-  haptic();
-  const { lead: l, events } = await api("/api/leads/" + id);
-  const open = ["new", "taken", "contacted", "replied"].includes(l.status);
-  const btn = (s, label, cls = "") => `<button data-s="${s}" class="${cls}">${label}</button>`;
-  let actions = "";
-  if (l.status === "new") actions += btn("taken", "👋 Беру", "primary") + btn("hot", "🔥 Горячий") + btn("spam", "🚫 Не лид");
-  else if (open) actions += btn("contacted", "✅ Написал") + btn("replied", "💬 Ответил") + btn("deal", "🤝 Сделка", "primary") + btn("lost", "❌ Отказ");
-  else actions += btn("taken", "↩️ Вернуть в работу");
-  $("#modal-body").innerHTML = `
-    <h2>#${l.id} · ${ICONS[l.source.split(":")[0]] || "📌"} ${esc(l.source)} · ${l.score}/10 ${l.urgency === "высокая" ? "🔴" : ""}</h2>
-    <div class="meta"><span class="badge ${esc(l.status)}">${STATUS[l.status] || l.status}</span> ${l.service ? "🎯 " + esc(l.service) : ""} ${l.budget ? "💰 " + esc(l.budget) : ""} ${l.assigned_name ? "🙋 " + esc(l.assigned_name) : ""}</div>
-    ${l.title ? `<p><b>${esc(l.title)}</b></p>` : ""}
-    ${l.summary ? `<p>🤖 ${esc(l.summary)}</p>` : ""}
-    <pre>${esc(l.text)}</pre>
-    <p>${l.author ? "👤 " + esc(l.author) + "<br>" : ""}${l.contact ? "📞 " + esc(l.contact) + "<br>" : ""}${l.author_bio ? "ℹ️ " + esc(l.author_bio) + "<br>" : ""}${l.chat_title ? "💬 " + esc(l.chat_title) + "<br>" : ""}${l.rule ? "🎯 правило: " + esc(l.rule) : ""}</p>
-    ${l.url ? `<p><a href="${esc(l.url)}" target="_blank" rel="noopener">Открыть источник ↗</a></p>` : ""}
-    <div class="actions">${actions}</div>
-    ${l.draft ? `<h3>✍️ Черновик ответа <button id="copy-draft">копировать</button></h3><pre id="draft">${esc(l.draft)}</pre>` : ""}
-    <div class="events">${events.map((e) => `${new Date(e.at).toLocaleString("ru-RU")} — ${STATUS[e.status] || e.status}${e.user_name ? " · " + esc(e.user_name) : ""}`).join("<br>")}</div>`;
-  $("#modal").classList.remove("hidden");
-  $("#modal-body").querySelectorAll(".actions button").forEach((b) => b.onclick = async () => {
-    try {
-      await api(`/api/leads/${id}/status`, { method: "POST", body: JSON.stringify({ status: b.dataset.s }) });
-      haptic("medium"); toast("Готово"); openLead(id); loadLeads();
-    } catch (e) { toast(e.message); }
-  });
-  const cp = $("#copy-draft");
-  if (cp) cp.onclick = () => { navigator.clipboard?.writeText($("#draft").textContent); toast("Скопировано"); };
-  $("#modal-body").querySelectorAll("a").forEach((a) => a.onclick = (ev) => { if (tg?.openLink) { ev.preventDefault(); tg.openLink(a.href); } });
+/* ---------- шторка ---------- */
+let sheetId = null;
+function closeSheet() { $("#sheet").classList.add("hidden"); sheetId = null; tg?.MainButton?.hide(); if (current !== "settings") tg?.BackButton?.hide(); }
+$$("[data-close]").forEach((b) => b.addEventListener("click", closeSheet));
+// свайп шторки вниз — закрыть
+(() => { const body = $(".sheet-body"); let y0 = null;
+  body.addEventListener("touchstart", (e) => { y0 = body.scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+  body.addEventListener("touchend", (e) => { if (y0 != null && e.changedTouches[0].clientY - y0 > 90) closeSheet(); y0 = null; }); })();
+function setMain(text, status) {
+  if (!tg?.MainButton || !inTelegram) return false;
+  tg.MainButton.offClick(mainHandler); mainHandler = async () => { if (await act(sheetId, status)) openLead(sheetId); };
+  tg.MainButton.setParams({ text, is_visible: true, is_active: true }); tg.MainButton.onClick(mainHandler); return true;
 }
-$("#modal-close").onclick = () => $("#modal").classList.add("hidden");
-$("#modal").onclick = (e) => { if (e.target.id === "modal") $("#modal").classList.add("hidden"); };
+let mainHandler = () => {};
+async function openLead(id) {
+  haptic.tap(); sheetId = id;
+  let data; try { data = await api("/api/leads/" + id); } catch (e) { toast(e.message); return; }
+  const { lead: l, events } = data;
+  const open = ["new", "taken", "contacted", "replied"].includes(l.status);
+  const mineLead = me && l.assigned_to === me.id;
+  // одно главное действие — следующий шаг воронки
+  const next = l.status === "new" ? ["taken", "👋 Беру"] : l.status === "taken" ? ["contacted", "✅ Написал клиенту"]
+    : l.status === "contacted" ? ["replied", "💬 Клиент ответил"] : l.status === "replied" ? ["deal", "🤝 Сделка"] : null;
+  const facts = [];
+  if (l.contact) facts.push(["Контакт", linkify(l.contact)]);
+  if (l.author && l.author !== l.contact) facts.push(["Автор", esc(l.author)]);
+  if (l.author_bio) facts.push(["О себе", esc(l.author_bio)]);
+  if (l.chat_title) facts.push(["Чат", esc(l.chat_title)]);
+  if (l.budget) facts.push(["Бюджет", esc(l.budget)]);
+  if (l.url) facts.push(["Источник", `<a href="${esc(l.url)}" data-ext>${esc(srcName(l.source))} ↗</a>`]);
+  $("#sheet-content").innerHTML = `
+    <h2>${esc(l.summary || l.title || l.text.slice(0, 90))}</h2>
+    <div class="status-line">
+      <span class="badge ${esc(l.status)}">${STATUS[l.status] || l.status}</span>
+      <span>${l.score}/10</span>${l.urgency === "высокая" ? "<span>🔴 срочно</span>" : ""}
+      ${l.service ? `<span>· ${SERVICE[l.service] || esc(l.service)}</span>` : ""}
+      ${l.assigned_name ? `<span>· ${mineLead ? "у вас" : esc(l.assigned_name)}</span>` : ""}
+      <span>· ${fmtTime(l.created_at)}</span>
+    </div>
+    ${l.summary ? `<div class="ai">${esc(l.summary)}</div>` : ""}
+    ${l.title && l.summary ? `<div class="text"><b>${esc(l.title)}</b></div>` : ""}
+    <div class="text clamp" id="lead-text">${esc(l.text)}</div>
+    ${l.text.length > 400 ? `<button class="text" id="expand" style="padding:0">Показать полностью</button>` : ""}
+    <div class="facts">${facts.map(([k, v]) => `<div><span class="k">${k}</span><span>${v}</span></div>`).join("")}</div>
+    ${l.draft ? `<div class="draft"><div class="card-title">Черновик ответа <button class="text" id="copy" style="padding:0">Скопировать</button></div><pre id="draft">${esc(l.draft)}</pre></div>` : ""}
+    ${next && !setMain(next[1], next[0]) ? `<button class="primary" data-s="${next[0]}">${next[1]}</button>` : ""}
+    <div class="secondary">
+      ${l.status === "new" ? `<button data-s="hot">🔥 Горячий</button><button data-s="spam" class="danger">Не лид</button>` : ""}
+      ${open && l.status !== "new" ? `<button data-s="lost" class="danger">Отказ</button>` : ""}
+      ${!open ? `<button data-s="taken">↩︎ Вернуть в работу</button>` : ""}
+    </div>
+    <div class="history">${events.map((e) => `${new Date(e.at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} — ${STATUS[e.status] || e.status}${e.user_name ? " · " + esc(e.user_name) : ""}`).join("<br>")}</div>`;
+  if (!next) tg?.MainButton?.hide();
+  $("#sheet").classList.remove("hidden"); tg?.BackButton?.show();
+  $$("#sheet-content [data-s]").forEach((b) => b.onclick = async () => { if (await act(id, b.dataset.s)) openLead(id); });
+  const ex = $("#expand"); if (ex) ex.onclick = () => { $("#lead-text").classList.remove("clamp"); ex.remove(); };
+  const cp = $("#copy"); if (cp) cp.onclick = () => { navigator.clipboard?.writeText($("#draft").textContent); haptic.ok(); toast("Скопировано"); };
+  $$("#sheet-content a").forEach((a) => a.onclick = (ev) => { if (tg?.openLink && a.dataset.ext !== undefined) { ev.preventDefault(); tg.openLink(a.href); } else if (tg?.openTelegramLink && a.href.includes("t.me")) { ev.preventDefault(); tg.openTelegramLink(a.href); } });
+}
+function linkify(c) {
+  const parts = c.split(/,\s*/).map((p) => {
+    if (p.startsWith("@")) return `<a href="https://t.me/${esc(p.slice(1))}">${esc(p)}</a>`;
+    if (/^https?:\/\//.test(p)) return `<a href="${esc(p)}" data-ext>${esc(p.replace(/^https?:\/\/(www\.)?/, ""))}</a>`;
+    if (/^\+?\d[\d\s()\-]{6,}$/.test(p)) return `<a href="tel:${esc(p.replace(/[^\d+]/g, ""))}">${esc(p)}</a>`;
+    if (p.includes("@")) return `<a href="mailto:${esc(p)}">${esc(p)}</a>`;
+    return esc(p);
+  });
+  return parts.join(", ");
+}
 
-// ---------- stats ----------
-let days = 30;
-document.querySelectorAll("#days-chips button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll("#days-chips button").forEach((x) => x.classList.toggle("on", x === b)); days = +b.dataset.days; loadStats();
-});
-function table(el, rows, label) {
-  if (!rows.length) { el.innerHTML = `<div class="empty">нет данных</div>`; return; }
-  el.innerHTML = `<div class="tr th"><span>${label}</span><span title="найдено">🔎</span><span title="взяли">👋</span><span title="написали">✅</span><span title="ответил">💬</span><span title="сделка">🤝</span></div>` +
-    rows.map((r) => `<div class="tr"><span title="${esc(r.k)}">${esc(r.k)}</span><span>${r.found}</span><span>${r.taken}</span><span>${r.contacted}</span><span>${r.replied}</span><b>${r.deal}</b></div>`).join("");
+/* ---------- Отчёт ---------- */
+let days = 30, funnelBy = "source", statsCache = null;
+$$("#seg-days button").forEach((b) => b.onclick = () => { $$("#seg-days button").forEach((x) => x.classList.toggle("on", x === b)); days = +b.dataset.days; loadStats(); });
+$$("#seg-funnel button").forEach((b) => b.onclick = () => { $$("#seg-funnel button").forEach((x) => x.classList.toggle("on", x === b)); funnelBy = b.dataset.by; if (statsCache) renderFunnel(statsCache); });
+function renderFunnel(s) {
+  const rows = (s["funnel_" + funnelBy] || []).slice(0, 8), max = Math.max(1, ...rows.map((r) => r.found));
+  $("#funnel").innerHTML = rows.map((r) => `<div class="fr"><div><div class="k">${esc(r.k === "—" ? "без данных" : funnelBy === "source" ? srcName(r.k) : funnelBy === "service" ? (SERVICE[r.k] || r.k) : r.k)}</div>
+    <div class="bar"><i style="width:${(r.found / max) * 100}%"></i><b style="width:${(r.deal / max) * 100}%"></b></div></div>
+    <div class="n">${r.found} → ${r.contacted} → <b>${r.deal}</b></div></div>`).join("") || `<div class="empty">пока пусто</div>`;
 }
 async function loadStats() {
   try {
-    const s = await api("/api/stats?days=" + days);
+    const s = statsCache = await api("/api/stats?days=" + days);
     const total = Object.values(s.by_status).reduce((a, b) => a + b, 0);
-    const kpi = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
-    $("#kpis").innerHTML = kpi(total, "лидов") + kpi(s.by_status.deal || 0, "сделок") +
-      kpi(s.response.median_min == null ? "—" : s.response.median_min.toFixed(0) + " мин", "медиана до «взял»") +
-      kpi(s.response.under5_pct == null ? "—" : s.response.under5_pct + "%", "взяты за 5 мин") +
-      kpi(s.by_status.new || 0, "не разобрано") + kpi(s.by_status.spam || 0, "не лид");
+    const kpi = (v, l, c = "") => `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`;
+    $("#stats-kpi").innerHTML = kpi(total, "лидов") + kpi(s.by_status.deal || 0, "сделок", "good")
+      + kpi(s.response.median_min == null ? "—" : Math.round(s.response.median_min) + " мин", "медиана до «беру»")
+      + kpi(s.response.under5_pct == null ? "—" : s.response.under5_pct + "%", "взяты за 5 минут", s.response.under5_pct >= 50 ? "good" : "");
     const max = Math.max(1, ...s.per_day.map((d) => d.n));
-    $("#chart-days").innerHTML = s.per_day.map((d) => `<div style="height:${(d.n / max) * 100}%" title="${d.day}: ${d.n} лидов, ${d.deals} сделок"></div>`).join("") || `<div class="empty">нет данных</div>`;
-    table($("#funnel-source"), s.funnel_source, "источник"); table($("#funnel-service"), s.funnel_service, "услуга");
-    table($("#funnel-phrase"), s.funnel_phrase, "фраза"); table($("#funnel-chat"), s.funnel_chat, "чат");
+    $("#chart-days").innerHTML = s.per_day.map((d) => `<div class="${d.deals ? "deal" : ""}" style="height:${(d.n / max) * 100}%" title="${d.day}: ${d.n}"></div>`).join("") || `<div class="empty">пока пусто</div>`;
+    $("#chart-days").classList.toggle("few", s.per_day.length < 7);
+    renderFunnel(s);
     const byUser = {}; s.team.forEach((t) => { (byUser[t.user_name] ||= {})[t.status] = t.n; });
-    $("#team").innerHTML = Object.entries(byUser).map(([n, v]) => `<div class="tr"><span>${esc(n)}</span><span>—</span><span>${v.taken || 0}</span><span>${v.contacted || 0}</span><span>${v.replied || 0}</span><b>${v.deal || 0}</b></div>`).join("") || `<div class="empty">пока никто ничего не брал</div>`;
-    $("#sources").innerHTML = s.sources.map((x) => `<li>${esc(x)}</li>`).join("");
+    $("#team").innerHTML = Object.entries(byUser).map(([n, v]) => `<div class="row"><span>${esc(n)}</span><span class="n">взял ${v.taken || 0} · написал ${v.contacted || 0} · сделок ${v.deal || 0}</span></div>`).join("") || `<div class="empty">пока никто не брал лидов</div>`;
+    $("#sources").innerHTML = s.sources.map((x) => { const [name, rest] = x.split(" — "); return `<div class="row"><span>${esc(name)}</span><span class="n">${esc(rest || "")}</span></div>`; }).join("");
   } catch (e) { toast(e.message); }
 }
 
-// ---------- settings ----------
-let settings;
+/* ---------- Настройки ---------- */
+let S = null, saveT;
+function autosave(patch) { clearTimeout(saveT); saveT = setTimeout(async () => { try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500); }
+$$(".stepper button").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
+$("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
+$("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
+$("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
+function tag(text, onDel, cls = "") { const el = document.createElement("span"); el.className = "tag " + cls; el.innerHTML = `<code>${esc(text)}</code><button aria-label="удалить">×</button>`; $("button", el).onclick = onDel; return el; }
 function renderSettings(s) {
-  settings = s;
-  $("#s-threshold").value = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
-  $("#s-phrases").value = s.phrases.join("\n");
-  $("#s-rules").innerHTML = s.rules.map((r) => `<li><code>${esc(r.expr)}</code><button data-id="${r.id}">✕</button></li>`).join("") || `<li class="hint">правил нет</li>`;
-  $("#s-rules").querySelectorAll("button").forEach((b) => b.onclick = async () => { renderSettings({ ...s, rules: (await api("/api/rules/" + b.dataset.id, { method: "DELETE" })).rules }); });
-  const kwHtml = (kind, words) => `<p class="hint">${{ topic: "тема", intent: "намерение", negative: "стоп-слова" }[kind]}</p>` +
-    words.map((w) => `<span class="kw">${esc(w)}${kind === "topic" ? " <i>" + esc(s.keywords.topic[w]) + "</i>" : ""}<button data-w="${esc(w)}">✕</button></span>`).join("");
-  $("#s-keywords").innerHTML = kwHtml("topic", Object.keys(s.keywords.topic)) + kwHtml("intent", s.keywords.intent) + kwHtml("negative", s.keywords.negative);
-  $("#s-keywords").querySelectorAll("button").forEach((b) => b.onclick = async () => renderSettings(await api("/api/keywords/" + encodeURIComponent(b.dataset.w), { method: "DELETE" })));
-  const services = ["сайт", "бот", "автоматизация", "мультик"];
-  $("#s-templates").innerHTML = services.map((sv) => `<label>${sv}<textarea data-sv="${sv}" rows="2">${esc(s.templates[sv] || "")}</textarea></label>`).join("") + `<button id="s-templates-save">Сохранить шаблоны</button>`;
-  $("#s-templates-save").onclick = async () => { const t = {}; $("#s-templates").querySelectorAll("textarea").forEach((x) => { if (x.value.trim()) t[x.dataset.sv] = x.value.trim(); }); renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ templates: t }) })); toast("Сохранено"); };
-  const ig = [...Object.entries(s.ignored.chat).map(([k, v]) => ({ k, v: "💬 " + (v || k) })), ...Object.keys(s.ignored.author).map((k) => ({ k, v: "👤 " + k }))];
-  $("#s-ignored").innerHTML = ig.map((x) => `<span class="kw">${esc(x.v)}<button data-k="${esc(x.k)}">✕</button></span>`).join("") || `<p class="hint">пусто</p>`;
-  $("#s-ignored").querySelectorAll("button").forEach((b) => b.onclick = async () => renderSettings(await api("/api/ignored/" + encodeURIComponent(b.dataset.k), { method: "DELETE" })));
-  $("#s-team").innerHTML = s.team.map((m) => `<li>${esc(m.name)} <span class="hint">${m.user_id}</span></li>`).join("") || `<li class="hint">нажмите любую кнопку в рабочей группе, чтобы попасть в команду</li>`;
+  S = s;
+  $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
+  const ph = $("#s-phrases"); ph.replaceChildren(...s.phrases.map((p) => tag(p, async () => renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: s.phrases.filter((x) => x !== p) }) })))));
+  const rl = $("#s-rules"); rl.replaceChildren(...s.rules.map((r) => tag(r.expr, async () => { await api("/api/rules/" + r.id, { method: "DELETE" }); loadSettings(); })));
+  if (!s.rules.length) rl.innerHTML = `<span class="hint">Правил нет — лиды отбираются словарём и ИИ</span>`;
+  const kw = $("#s-keywords"); kw.innerHTML = "";
+  const groups = [["topic", "Тема", Object.keys(s.keywords.topic)], ["intent", "Намерение", s.keywords.intent], ["negative", "Стоп-слова", s.keywords.negative]];
+  for (const [kind, label, words] of groups) {
+    const g = document.createElement("div"); g.className = "kw-group"; g.innerHTML = `<div class="hint">${label}</div><div class="tags"></div>`;
+    $(".tags", g).replaceChildren(...words.map((w) => tag(kind === "topic" ? `${w} · ${s.keywords.topic[w]}` : w, async () => { await api("/api/keywords/" + encodeURIComponent(w), { method: "DELETE" }); loadSettings(); }, kind === "topic" ? "cat" : "")));
+    kw.appendChild(g);
+  }
+  const tp = $("#s-templates"); tp.className = "tpl";
+  tp.innerHTML = Object.entries(SERVICE).map(([k, v]) => `<label>${v}<textarea data-sv="${k}" rows="2" placeholder="Здравствуйте! Увидел ваш запрос…">${esc(s.templates[k] || "")}</textarea></label>`).join("");
+  $$("textarea", tp).forEach((t) => t.onchange = () => autosave({ templates: { [t.dataset.sv]: t.value.trim() } }));
+  const ig = $("#s-ignored");
+  ig.replaceChildren(...Object.entries(s.ignored.chat).map(([k, v]) => tag("💬 " + (v || k), async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })),
+    ...Object.keys(s.ignored.author).map((k) => tag("👤 " + k, async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })));
+  if (!ig.children.length) ig.innerHTML = `<span class="hint">пусто</span>`;
+  $("#s-team").innerHTML = s.team.map((m) => `<div class="row"><span>${esc(m.name)}</span><span class="n">${m.user_id}</span></div>`).join("") || `<div class="empty">пока только вы</div>`;
 }
 async function loadSettings() { try { renderSettings(await api("/api/settings")); } catch (e) { toast(e.message); } }
-$("#s-save").onclick = async () => {
-  try { renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ threshold: +$("#s-threshold").value, paused: $("#s-paused").checked, geo: $("#s-geo").value, profile: $("#s-profile").value }) })); toast("Сохранено"); haptic("medium"); } catch (e) { toast(e.message); }
-};
-$("#s-phrases-save").onclick = async () => {
-  try { renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: $("#s-phrases").value.split("\n").map((x) => x.trim()).filter(Boolean) }) })); toast("Фразы сохранены"); } catch (e) { toast(e.message); }
-};
-$("#s-rule-add").onclick = async () => {
-  try { const { rules } = await api("/api/rules", { method: "POST", body: JSON.stringify({ expr: $("#s-rule").value }) }); $("#s-rule").value = ""; renderSettings({ ...settings, rules }); } catch (e) { toast(e.message); }
-};
-$("#s-kw-add").onclick = async () => {
-  try { renderSettings(await api("/api/keywords", { method: "POST", body: JSON.stringify({ kind: $("#s-kw-kind").value, word: $("#s-kw-word").value, category: $("#s-kw-cat").value || null }) })); $("#s-kw-word").value = ""; } catch (e) { toast(e.message); }
-};
+$$("[data-add]").forEach((b) => b.onclick = async () => {
+  try {
+    if (b.dataset.add === "phrase") { const v = $("#s-phrase-new").value.trim(); if (!v) return; $("#s-phrase-new").value = ""; renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: [...S.phrases, v] }) })); }
+    if (b.dataset.add === "rule") { const v = $("#s-rule-new").value.trim(); if (!v) return; await api("/api/rules", { method: "POST", body: JSON.stringify({ expr: v }) }); $("#s-rule-new").value = ""; loadSettings(); }
+    if (b.dataset.add === "kw") { const w = $("#s-kw-word").value.trim(); if (!w) return; const kind = $("#s-kw-kind").value; await api("/api/keywords", { method: "POST", body: JSON.stringify({ kind, word: w, category: kind === "topic" ? "другое" : null }) }); $("#s-kw-word").value = ""; loadSettings(); }
+    haptic.ok();
+  } catch (e) { haptic.err(); toast(e.message); }
+});
 
-loadLeads();
+show("today");

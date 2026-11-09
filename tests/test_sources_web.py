@@ -41,13 +41,16 @@ def test_parse_weblancer_html():
     jobs = [{"id": "1270449", "type": "project", "name": "Интегратор CRM для бюро", "status": "opened",
              "description": "<p>Нужно настроить <b>CRM</b></p>", "budget": "2400", "bidding_time": "1794215251",
              "url": "/freelance/prikladnoe-po-23/integrator-1270449/", "user": {"first_name": "Владислав", "last_name": ""}},
-            {"id": "2", "type": "project", "name": "Закрыт", "status": "closed", "description": "x"}]
+            {"id": "2", "type": "project", "name": "Закрыт", "status": "closed", "description": "x"},
+            {"id": "3", "type": "project", "name": "Длинный", "status": "opened", "description": "$3f",
+             "snippet": "Нужен аудит сайта", "url": "/freelance/x-3/"}]
     payload = '{"props":{"jobs":' + json.dumps(jobs, ensure_ascii=False) + ',"total":2}}'
     # RSC-payload режется на куски и экранируется как JS-строки
     half = len(payload) // 2
     chunks = [json.dumps(payload[:half])[1:-1], json.dumps(payload[half:])[1:-1]]
     html = "".join(f'<script>self.__next_f.push([1,"{c}"])</script>' for c in chunks)
-    (lead,) = parse_weblancer_html(html)
+    lead, long = parse_weblancer_html(html)
+    assert long.text == "Нужен аудит сайта"
     assert lead.external_id == "1270449" and lead.title == "Интегратор CRM для бюро"
     assert lead.text == "Нужно настроить CRM\nБюджет: 2400 $" and lead.author == "Владислав"
     assert lead.url == "https://www.weblancer.net/freelance/prikladnoe-po-23/integrator-1270449/"

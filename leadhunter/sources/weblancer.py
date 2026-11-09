@@ -8,6 +8,7 @@ from .base import Source, strip_html
 
 BASE = "https://www.weblancer.net"
 CHUNK_RE = re.compile(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)')
+REF_RE = re.compile(r"^\$[0-9a-f]+$")
 
 
 def parse_weblancer_html(body: str) -> list[Lead]:
@@ -24,7 +25,11 @@ def parse_weblancer_html(body: str) -> list[Lead]:
     for j in jobs:
         if not j.get("id") or j.get("status") not in (None, "opened"):
             continue
-        text = strip_html(j.get("description") or j.get("snippet") or "")
+        # Длинные описания RSC выносит в отдельный чанк и оставляет ссылку вида "$3f" — берём сниппет
+        desc = j.get("description") or ""
+        if REF_RE.match(desc):
+            desc = j.get("snippet") or j.get("seo_snippet") or j.get("localizedSnippet") or ""
+        text = strip_html(desc)
         if j.get("budget") and str(j["budget"]) not in ("0", "None"):
             text += f"\nБюджет: {j['budget']} $"
         ts = j.get("bidding_time")

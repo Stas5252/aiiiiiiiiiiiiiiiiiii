@@ -2,121 +2,163 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="light dark">
 <title>LeadHunter</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header>
-  <div class="brand">🎯 LeadHunter</div>
-  <nav>
-    <button data-tab="leads" class="active">Лиды</button>
-    <button data-tab="stats">Статистика</button>
-    <button data-tab="settings">Настройки</button>
-  </nav>
-</header>
+<div id="app">
+  <!-- Экран: Сегодня -->
+  <section id="screen-today" class="screen active">
+    <header class="top">
+      <h1>Сегодня</h1>
+      <button class="icon" id="open-settings" aria-label="Настройки">⚙︎</button>
+    </header>
+    <div id="today-kpi" class="kpi-row"></div>
+    <div id="today-alert" class="alert hidden"></div>
+    <h2 class="section-title">Нужно взять <span id="today-new-count" class="count"></span></h2>
+    <div id="today-new" class="list"></div>
+    <h2 class="section-title">В работе у меня <span id="today-mine-count" class="count"></span></h2>
+    <div id="today-mine" class="list"></div>
+  </section>
 
-<main>
-  <section id="tab-leads" class="tab active">
-    <div class="filters">
-      <input id="q" type="search" placeholder="Поиск по тексту, автору…">
-      <div class="chips" id="status-chips">
-        <button data-status="open" class="on">Открытые</button>
-        <button data-status="new">Новые</button>
-        <button data-status="taken">В работе</button>
-        <button data-status="contacted">Написали</button>
-        <button data-status="replied">Ответили</button>
-        <button data-status="deal">Сделки</button>
-        <button data-status="">Все</button>
-      </div>
-      <div class="chips" id="service-chips">
-        <button data-service="" class="on">Все услуги</button>
-        <button data-service="сайт">🌐 Сайты</button>
-        <button data-service="бот">🤖 Боты</button>
-        <button data-service="автоматизация">⚙️ Автоматизация</button>
-        <button data-service="мультик">🎬 Мультики</button>
-      </div>
-      <label class="mine"><input type="checkbox" id="mine"> только мои</label>
+  <!-- Экран: Все лиды -->
+  <section id="screen-leads" class="screen">
+    <header class="top">
+      <h1>Лиды</h1>
+    </header>
+    <div class="search"><input id="q" type="search" placeholder="Поиск" autocomplete="off"></div>
+    <div class="segmented" id="seg-status">
+      <button data-status="open" class="on">Открытые</button>
+      <button data-status="deal">Сделки</button>
+      <button data-status="">Все</button>
+    </div>
+    <div class="chips" id="chips-service">
+      <button data-service="" class="on">Все</button>
+      <button data-service="сайт">Сайты</button>
+      <button data-service="бот">Боты</button>
+      <button data-service="автоматизация">Автоматизация</button>
+      <button data-service="мультик">Видео</button>
     </div>
     <div id="lead-list" class="list"></div>
-    <button id="more" class="ghost">Показать ещё</button>
+    <div id="more-wrap" class="center hidden"><button id="more" class="text">Ещё</button></div>
   </section>
 
-  <section id="tab-stats" class="tab">
-    <div class="chips" id="days-chips">
-      <button data-days="7">7 дней</button>
-      <button data-days="30" class="on">30 дней</button>
-      <button data-days="90">90 дней</button>
-    </div>
-    <div class="kpis" id="kpis"></div>
-    <h3>Лиды по дням</h3>
-    <div id="chart-days" class="bars"></div>
-    <h3>Воронка по источникам</h3>
-    <div id="funnel-source" class="table"></div>
-    <h3>По услугам</h3>
-    <div id="funnel-service" class="table"></div>
-    <h3>По фразам</h3>
-    <div id="funnel-phrase" class="table"></div>
-    <h3>По чатам</h3>
-    <div id="funnel-chat" class="table"></div>
-    <h3>Команда</h3>
-    <div id="team" class="table"></div>
-    <h3>Источники</h3>
-    <ul id="sources" class="plain"></ul>
-  </section>
-
-  <section id="tab-settings" class="tab">
+  <!-- Экран: Отчёт -->
+  <section id="screen-stats" class="screen">
+    <header class="top">
+      <h1>Отчёт</h1>
+      <div class="segmented small" id="seg-days">
+        <button data-days="7">7д</button><button data-days="30" class="on">30д</button><button data-days="90">90д</button>
+      </div>
+    </header>
+    <div id="stats-kpi" class="kpi-grid"></div>
     <div class="card">
-      <label>Порог уведомлений (0–10) <input id="s-threshold" type="number" min="0" max="10"></label>
-      <label class="row"><input id="s-paused" type="checkbox"> Пауза уведомлений</label>
-      <label>Гео-фильтр (города через запятую, пусто = везде) <input id="s-geo" type="text" placeholder="Москва, Тула"></label>
-      <label>Профиль студии (для ИИ) <textarea id="s-profile" rows="4"></textarea></label>
-      <button id="s-save" class="primary">Сохранить</button>
+      <div class="card-title">Лиды по дням</div>
+      <div id="chart-days" class="bars"></div>
     </div>
     <div class="card">
-      <h3>Фразы для поиска</h3>
-      <textarea id="s-phrases" rows="6" placeholder="по одной на строку"></textarea>
-      <button id="s-phrases-save">Сохранить фразы</button>
-    </div>
-    <div class="card">
-      <h3>Правила</h3>
-      <p class="hint">+слово обязательно · (а|б) любое из · -слово запрет · "точная форма". Словоформы учитываются.</p>
-      <ul id="s-rules" class="plain"></ul>
-      <div class="row"><input id="s-rule" type="text" placeholder='+сайт +(нужен|ищу) -предлагаю'><button id="s-rule-add">Добавить</button></div>
-    </div>
-    <div class="card">
-      <h3>Словарь</h3>
-      <div id="s-keywords"></div>
-      <div class="row">
-        <select id="s-kw-kind"><option value="topic">тема</option><option value="intent">намерение</option><option value="negative">стоп</option></select>
-        <input id="s-kw-word" type="text" placeholder="слово">
-        <input id="s-kw-cat" type="text" placeholder="услуга (для темы)">
-        <button id="s-kw-add">+</button>
+      <div class="card-title">Откуда приходят сделки</div>
+      <div id="funnel" class="funnel"></div>
+      <div class="segmented small" id="seg-funnel">
+        <button data-by="source" class="on">Источник</button><button data-by="service">Услуга</button>
+        <button data-by="phrase">Фраза</button><button data-by="chat">Чат</button>
       </div>
     </div>
     <div class="card">
-      <h3>Шаблоны ответов (когда нет ИИ)</h3>
-      <div id="s-templates"></div>
+      <div class="card-title">Команда</div>
+      <div id="team" class="rows"></div>
     </div>
     <div class="card">
-      <h3>Игнор-лист</h3>
-      <div id="s-ignored"></div>
-    </div>
-    <div class="card">
-      <h3>Команда</h3>
-      <ul id="s-team" class="plain"></ul>
+      <div class="card-title">Источники</div>
+      <div id="sources" class="rows small"></div>
     </div>
   </section>
-</main>
 
-<div id="modal" class="modal hidden">
-  <div class="sheet">
-    <button class="close" id="modal-close">✕</button>
-    <div id="modal-body"></div>
+  <!-- Экран: Настройки (отдельная страница, BackButton) -->
+  <section id="screen-settings" class="screen">
+    <header class="top">
+      <button class="icon back" data-back aria-label="Назад">‹</button>
+      <h1>Настройки</h1>
+    </header>
+    <div class="card">
+      <div class="row-setting">
+        <div><div class="label">Порог балла</div><div class="hint">лиды ниже не показываем</div></div>
+        <div class="stepper"><button data-step="-1">−</button><span id="s-threshold">5</span><button data-step="1">+</button></div>
+      </div>
+      <div class="row-setting">
+        <div><div class="label">Пауза уведомлений</div><div class="hint">лиды копятся, но не присылаются</div></div>
+        <label class="switch"><input type="checkbox" id="s-paused"><span></span></label>
+      </div>
+      <div class="row-setting col">
+        <div class="label">Города</div>
+        <input id="s-geo" type="text" placeholder="Пусто — вся страна">
+      </div>
+      <div class="row-setting col">
+        <div class="label">Что продаёте <span class="hint">— ИИ оценивает лидов по этому описанию</span></div>
+        <textarea id="s-profile" rows="3"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Фразы поиска <span class="hint">Threads, VK, поисковики</span></div>
+      <div id="s-phrases" class="tags"></div>
+      <div class="add-row"><input id="s-phrase-new" placeholder="нужен сайт"><button class="plus" data-add="phrase">+</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Правила <span class="hint">+нужно −запрет (а|б) любое</span></div>
+      <div id="s-rules" class="tags"></div>
+      <div class="add-row"><input id="s-rule-new" placeholder="+сайт +(нужен|ищу) -предлагаю"><button class="plus" data-add="rule">+</button></div>
+    </div>
+
+    <details class="card">
+      <summary>Словарь</summary>
+      <div id="s-keywords"></div>
+      <div class="add-row">
+        <select id="s-kw-kind"><option value="topic">тема</option><option value="intent">намерение</option><option value="negative">стоп</option></select>
+        <input id="s-kw-word" placeholder="слово">
+        <button class="plus" data-add="kw">+</button>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary>Шаблоны ответов <span class="hint">когда нет ИИ</span></summary>
+      <div id="s-templates"></div>
+    </details>
+
+    <details class="card">
+      <summary>Игнор-лист</summary>
+      <div id="s-ignored" class="tags"></div>
+    </details>
+
+    <details class="card">
+      <summary>Команда</summary>
+      <div id="s-team" class="rows"></div>
+      <p class="hint">Чтобы попасть в команду, нажмите любую кнопку в рабочей группе.</p>
+    </details>
+  </section>
+
+  <nav class="tabbar">
+    <button data-screen="today" class="on"><span class="ic">◉</span>Сегодня</button>
+    <button data-screen="leads"><span class="ic">☰</span>Лиды</button>
+    <button data-screen="stats"><span class="ic">◔</span>Отчёт</button>
+  </nav>
+
+  <!-- Шторка лида -->
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet-body">
+      <div class="grabber"></div>
+      <button class="icon sheet-close" data-close aria-label="Закрыть">✕</button>
+      <div id="sheet-content"></div>
+    </div>
   </div>
+
+  <div id="toast" class="toast hidden"></div>
 </div>
-<div id="toast" class="toast hidden"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
