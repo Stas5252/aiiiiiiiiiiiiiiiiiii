@@ -149,6 +149,15 @@ class MiniAppAPI:
     async def settings_get(self, request):
         await self.user(request)
         kw = await self.db.get_keywords()
+        from ..freshness import Freshness
+        from ..niches import NICHES
+        from ..content.factory import brand_from_setting
+        fr = Freshness.from_settings({"board_max_age_hours": await self.db.get_setting("board_max_age_hours"),
+                                      "max_competitors": await self.db.get_setting("max_competitors")})
+        brand = brand_from_setting(await self.db.get_setting("brand"))
+        factory = self.deps.extra.get("factory")
+        channels = await factory.store.channels() if factory else {}
+        integ = self.deps.extra.get("integrations")
         return web.json_response({
             "threshold": await self.db.get_setting("threshold", str(self.deps.extra.get("threshold", 5))),
             "profile": await self.db.get_setting("profile") or self.deps.default_profile,
@@ -161,27 +170,89 @@ class MiniAppAPI:
             "ignored": await self.db.get_ignored(),
             "team": [dict(r) for r in await self.db.members()],
             "workspace": await self.db.get_setting("workspace_chat_id", ""),
+            "niche": await self.db.get_setting("niche", ""),
+            "niches": [{"key": k, "title": n.title} for k, n in NICHES.items()],
+            "fresh": {"board_max_age_hours": fr.board_max_age_hours, "max_competitors": fr.max_competitors},
+            "voice": await self.db.get_setting("voice", ""),
+            "brand": {"name": brand.name, "handle": brand.handle, "primary": brand.primary, "accent": brand.accent},
+            "autopilot": (await self.db.get_setting("autopilot")) == "1",
+            "pillars": await self.db.get_setting("pillars", ""),
+            "channels": channels,
+            "integrations": await integ.status() if integ else [],
+            "summary": integ.summary() if integ else {},
+            "miniapp_url": self.deps.extra.get("miniapp_url"),
         })
 
     async def settings_set(self, request):
         user = await self.user(request)
         body = await request.json()
+        factory = self.deps.extra.get("factory")
         for key, value in body.items():
             if key == "threshold":
                 await self.db.set_setting("threshold", str(max(0, min(10, int(value)))))
-            elif key in ("profile", "geo"):
+            elif key in ("profile", "geo", "voice", "pillars"):
                 await self.db.set_setting(key, str(value).strip())
-            elif key == "paused":
-                await self.db.set_setting("paused", "1" if value else "0")
+            elif key in ("paused", "autopilot"):
+                await self.db.set_setting(key, "1" if value else "0")
             elif key == "phrases":
                 await self.deps.phrases.set(list(value))
             elif key == "templates":
                 for service, text in dict(value).items():
                     await self.db.set_template(service, text)
+            elif key == "niche":
+                from ..niches import NICHES, apply
+                if value not in NICHES:
+                    raise web.HTTPBadRequest(text="unknown niche")
+                await apply(self.db, self.deps.phrases, NICHES[value])
+            elif key == "fresh":
+                v = dict(value)
+                if "board_max_age_hours" in v:
+                    await self.db.set_setting("board_max_age_hours", str(max(0.1, min(72.0, float(v["board_max_age_hours"])))))
+                if "max_competitors" in v:
+                    await self.db.set_setting("max_competitors", str(max(0, min(500, int(v["max_competitors"])))))
+            elif key == "brand":
+                v = {k: str(dict(value).get(k, "")).strip() for k in ("name", "handle", "primary", "accent")}
+                for c in ("primary", "accent"):
+                    if v[c] and not (v[c].startswith("#") and len(v[c]) in (4, 7)):
+                        raise web.HTTPBadRequest(text=f"{c}: цвет в формате #RRGGBB")
+                await self.db.set_setting("brand", json.dumps({k: x for k, x in v.items() if x}, ensure_ascii=False))
+            elif key == "channels":
+                if not factory:
+                    raise web.HTTPBadRequest(text="контент-фабрика выключена")
+                for platform, target in dict(value).items():
+                    if platform not in ("telegram", "vk"):
+                        raise web.HTTPBadRequest(text="канал задаётся только для telegram и vk")
+                    target = str(target or "").strip()
+                    if not target:
+                        await factory.store.remove_channel(platform)
+                    elif platform == "vk" and not target.lstrip("-").isdigit():
+                        raise web.HTTPBadRequest(text="VK: числовой id, для группы со знаком минус")
+                    else:
+                        await factory.store.set_channel(platform, target)
+            elif key == "team_remove":
+                await self.db.remove_member(int(value))
             else:
                 raise web.HTTPBadRequest(text=f"unknown setting {key}")
         log.info("settings changed by %s: %s", user["id"], list(body))
         return await self.settings_get(request)
+
+    async def integration_set(self, request):
+        """Ключи API: проверка живым запросом, сохранение в базе, применение без перезапуска. Только владелец."""
+        user = await self.user(request)
+        if not user.get("is_owner"):
+            raise web.HTTPForbidden(text="только владелец")
+        integ = self.deps.extra.get("integrations")
+        if not integ:
+            raise web.HTTPServiceUnavailable(text="недоступно")
+        body = await request.json()
+        key, value = body.get("key"), body.get("value")
+        if value in (None, ""):
+            await integ.unset(key)
+        else:
+            err = await integ.set(key, str(value))
+            if err:
+                raise web.HTTPBadRequest(text=err)
+        return web.json_response({"integrations": await integ.status(), "summary": integ.summary()})
 
     async def rule_add(self, request):
         await self.user(request)
@@ -357,6 +428,7 @@ def build_app(api: MiniAppAPI) -> web.Application:
     r.add_get("/api/stats", api.stats)
     r.add_get("/api/settings", api.settings_get)
     r.add_post("/api/settings", api.settings_set)
+    r.add_post("/api/integrations", api.integration_set)
     r.add_post("/api/rules", api.rule_add)
     r.add_delete("/api/rules/{id:\\d+}", api.rule_del)
     r.add_post("/api/keywords", api.keyword_add)

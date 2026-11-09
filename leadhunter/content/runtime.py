@@ -75,3 +75,16 @@ async def build_content(s: Settings, db, bot, llm, deps, notifier) -> ContentFac
     deps.extra.update(factory=factory, publishers=publishers, content_hour=s.content_hour,
                       deliver_to_team=deliver_to_team, content_notify=notify)
     return factory
+
+
+def reconfigure_ai(s: Settings, deps, factory: ContentFactory, pipeline=None) -> None:
+    """После смены ключей в /setup: новые клиенты ИИ и медиа без перезапуска. Публикаторы читают Settings сами."""
+    llm = build_llm(s)
+    deps.llm = llm
+    factory.gen.llm = llm
+    if pipeline is not None:
+        pipeline.llm = llm
+    if deps.discover is not None:
+        deps.discover.llm = llm
+    factory.ai, factory.video_ai = build_media_ai(s)
+    log.info("ИИ переконфигурирован: %s, медиа: %s", llm.model if llm else "выкл", type(factory.ai).__name__)
