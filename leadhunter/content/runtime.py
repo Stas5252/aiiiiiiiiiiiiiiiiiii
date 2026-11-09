@@ -20,7 +20,8 @@ def build_llm(s: Settings):
         return LLMClassifier(s.openai_api_key, s.openai_base_url, s.openai_model, s.llm_max_per_hour)
     if s.gemini_api_key:
         from .gemini import DEFAULTS, gemini_openai_base_url
-        return LLMClassifier(s.gemini_api_key, gemini_openai_base_url(), s.gemini_model or DEFAULTS["llm_model"], s.llm_max_per_hour)
+        return LLMClassifier(s.gemini_api_key, gemini_openai_base_url(), s.gemini_model or DEFAULTS["llm_model"], s.llm_max_per_hour,
+                             fallback_model="gemini-3.5-flash-lite")
     return None
 
 

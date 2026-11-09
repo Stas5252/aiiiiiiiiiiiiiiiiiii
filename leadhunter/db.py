@@ -51,7 +51,7 @@ LEAD_COLUMNS = {
     "assigned_to": "INTEGER", "assigned_name": "TEXT", "assigned_at": "TEXT",
     "msg_chat_id": "INTEGER", "msg_id": "INTEGER", "thread_id": "INTEGER",
     "sla_pinged": "INTEGER NOT NULL DEFAULT 0", "followup_at": "TEXT", "followup_count": "INTEGER NOT NULL DEFAULT 0",
-    "phrase": "TEXT", "rule": "TEXT", "author_bio": "TEXT",
+    "phrase": "TEXT", "rule": "TEXT", "author_bio": "TEXT", "freshness": "TEXT", "competitors": "INTEGER",
 }
 OPEN_STATUSES = ("new", "taken", "contacted", "replied")
 
@@ -125,16 +125,16 @@ class Database:
     # --- лиды ---
     async def save_lead(self, lead: Lead, score: int, res: ScoreResult, *, summary: str | None = None,
                         service: str = "", budget: str = "", urgency: str = "", draft: str = "",
-                        rule: str = "", author_bio: str = "") -> int:
+                        rule: str = "", author_bio: str = "", freshness: str = "") -> int:
         matched = json.dumps({"topic": res.topic, "intent": res.intent, "negative": res.negative}, ensure_ascii=False)
         cur = await self.conn.execute(
             "INSERT INTO leads (source, external_id, url, title, text, author, contact, score, matched, summary,"
-            " service, budget, urgency, draft, chat_key, chat_title, phrase, rule, author_bio, found_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " service, budget, urgency, draft, chat_key, chat_title, phrase, rule, author_bio, freshness, competitors, found_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (lead.source, lead.external_id, lead.url, lead.title, lead.text, lead.author, lead.contact,
              score, matched, summary, service, budget, urgency, draft,
              lead.extra.get("chat_key"), lead.extra.get("chat_title"), lead.extra.get("phrase"), rule, author_bio,
-             lead.found_at.isoformat(), _now()),
+             freshness, lead.competitors, lead.found_at.isoformat(), _now()),
         )
         await self.conn.commit()
         lead_id = cur.lastrowid
@@ -318,9 +318,13 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,))
         return list(await cur.fetchall())
 
-    async def undelivered_leads(self, limit: int = 20) -> list[aiosqlite.Row]:
+    async def undelivered_leads(self, limit: int = 20, board_max_age_hours: float = 3.0) -> list[aiosqlite.Row]:
+        """Недоставленные лиды; с бирж — только те, что ещё можно забрать (моложе N часов)."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=board_max_age_hours)).isoformat()
         cur = await self.conn.execute(
-            "SELECT * FROM leads WHERE msg_id IS NULL AND status = 'new' ORDER BY score DESC, id DESC LIMIT ?", (limit,)
+            "SELECT * FROM leads WHERE msg_id IS NULL AND status = 'new'"
+            " AND (source NOT IN ('kwork', 'weblancer', 'freelance.ru', 'hh.ru', 'rss') AND source NOT LIKE 'rss:%' OR found_at >= ?)"
+            " ORDER BY score DESC, id DESC LIMIT ?", (since, limit)
         )
         return list(await cur.fetchall())
 

@@ -97,6 +97,8 @@ def format_lead(lead_id: int, lead: Lead, info: Enriched) -> str:
     tags = info.res.topic + info.res.intent
     if tags:
         lines.append("🏷 " + ", ".join(e(t) for t in tags))
+    if info.freshness:
+        lines.append(f"⏱ {e(info.freshness)}")
     if info.rule:
         lines.append(f"🎯 правило: <code>{e(info.rule)}</code>")
     if lead.url:
@@ -157,7 +159,7 @@ class TelegramNotifier:
                     extra={"chat_key": row["chat_key"], "chat_title": row["chat_title"]})
         info = Enriched(row["score"], res, summary=row["summary"], service=row["service"] or "", budget=row["budget"] or "",
                         urgency=row["urgency"] or "", draft=row["draft"] or "", rule=row["rule"] or "",
-                        author_bio=row["author_bio"] or "")
+                        author_bio=row["author_bio"] or "", freshness=(row["freshness"] or "") if "freshness" in row.keys() else "")
         await self.notify(row["id"], lead, info)
 
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None:

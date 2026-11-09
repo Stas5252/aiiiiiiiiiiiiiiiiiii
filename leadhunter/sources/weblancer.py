@@ -44,6 +44,7 @@ def parse_weblancer_html(body: str) -> list[Lead]:
             author=" ".join(filter(None, [user.get("first_name"), user.get("last_name")])),
             found_at=found,
             intent_implied=True,
+            competitors=int(j["total_bids_count"]) if str(j.get("total_bids_count", "")).isdigit() else None,
         ))
     return leads
 

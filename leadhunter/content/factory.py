@@ -126,7 +126,7 @@ class ContentFactory:
                 except Exception as e:
                     log.warning("картинка ИИ не сгенерировалась: %s", e)
             if cover:
-                media["images"] = [self.media.save(cover, ".png")]
+                media["images"] = [self.media.save(cover, ".jpg" if cover[:3] == b"\xff\xd8\xff" else ".png")]
                 media["ai_cover"] = True
             else:
                 subtitle = data.get("subtitle") or (data.get("body") or "").split("\n")[0][:120]

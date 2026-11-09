@@ -14,6 +14,7 @@ TITLE_RE = re.compile(r'<a class="task-card__title-link" href="(/task/view/(\d+)
 DESC_RE = re.compile(r'<p class="task-card__desc">(.*?)</p>', re.S)
 CAT_RE = re.compile(r'task-chip--cat">(.*?)</span>', re.S)
 DATE_RE = re.compile(r'title="(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})"')
+BIDS_RE = re.compile(r'fa-comments[^<]*</i>\s*<strong>(\d+)</strong>', re.S)
 BUDGET_RE = re.compile(r'task-card__budget[^"]*">\s*(.*?)\s*</div>', re.S)
 
 
@@ -38,6 +39,7 @@ def parse_freelance_ru_html(body: str) -> list[Lead]:
         d = DATE_RE.search(card)
         if d:
             found = datetime.strptime(d.group(1), "%d.%m.%Y %H:%M").replace(tzinfo=MSK)
+        bids = BIDS_RE.search(card)
         leads.append(Lead(
             source="freelance.ru",
             external_id=task_id,
@@ -46,6 +48,7 @@ def parse_freelance_ru_html(body: str) -> list[Lead]:
             url=f"https://freelance.ru{path}",
             found_at=found,
             intent_implied=True,
+            competitors=int(bids.group(1)) if bids else None,
         ))
     return leads
 

@@ -16,6 +16,8 @@ class Lead:
     intent_implied: bool = False
     # Источник сам знает, что это лид (например, бизнес без сайта) — ключевые слова и ИИ не нужны
     preset_score: int | None = None
+    # Сколько исполнителей уже откликнулось (биржи). None = источник не знает
+    competitors: int | None = None
     # chat_key/chat_title для Telegram — чтобы можно было заглушить шумный чат из карточки
     extra: dict = field(default_factory=dict)
 

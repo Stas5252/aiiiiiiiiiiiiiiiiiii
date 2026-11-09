@@ -31,7 +31,7 @@ HELP = """Я ищу лидов и делаю контент под вашу ни
 /rules — правила вида <code>+сайт +(нужен|ищу) -предлагаю</code> (словоформы учитываются)
 /rule_add выражение · /rule_del id
 /geo Москва, Тула — только эти города (пусто = везде) · /geo off
-/threshold N · /profile [текст] · /phrases · /phrases_set а; б · /phrases_gen
+/threshold N · /fresh часы откликов — какие заказы с бирж ещё реально забрать · /profile [текст] · /phrases · /phrases_set а; б · /phrases_gen
 /block @user · /unblock ключ · /ignored · /pause · /resume
 /template_set сайт текст — шаблон ответа по услуге, когда нет ИИ · /templates
 
@@ -116,6 +116,29 @@ def build_router(deps: BotDeps) -> Router:
                 src.queries = n.yandex_queries
         await m.answer("Переключил нишу:\n" + describe(n) + "\n\nИсточники подхватят фразы на следующем проходе. "
                        "Проверьте /profile, при желании уточните его под себя.")
+
+    @router.message(Command("fresh"))
+    async def fresh(m: Message, command: CommandObject):
+        if not await allowed(m):
+            return
+        from ..freshness import Freshness
+        cur = Freshness.from_settings({"board_max_age_hours": await db.get_setting("board_max_age_hours"),
+                                       "max_competitors": await db.get_setting("max_competitors")})
+        args = (command.args or "").split()
+        if len(args) == 2:
+            try:
+                hours, comp = float(args[0].replace(",", ".")), int(args[1])
+            except ValueError:
+                await m.answer("Формат: /fresh часы откликов — например /fresh 2 10")
+                return
+            await db.set_setting("board_max_age_hours", str(hours))
+            await db.set_setting("max_competitors", str(comp))
+            await m.answer(f"Биржи: беру заказы моложе {hours:g} ч и не больше {comp} откликов. Остальное не присылаю.")
+            return
+        await m.answer(f"<b>Свежесть заказов с бирж</b> (Kwork, Weblancer, Freelance.ru, FL, hh)\n"
+                       f"Присылаю только моложе <b>{cur.board_max_age_hours:g} ч</b> и с не больше <b>{cur.max_competitors}</b> откликами. "
+                       f"Моложе {cur.hot_age_minutes:g} мин и до {cur.hot_competitors} откликов — +2 к баллу.\n\n"
+                       f"Изменить: /fresh 2 10 (часы, откликов). Чаты, карты и аудит это не трогает.")
 
     @router.message(Command("app"))
     async def app_cmd(m: Message):
