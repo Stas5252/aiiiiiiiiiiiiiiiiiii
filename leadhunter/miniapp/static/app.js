@@ -29,7 +29,7 @@ const haptic = { tap: () => tg?.HapticFeedback?.impactOccurred("light"), ok: () 
 
 /* ---------- навигация ---------- */
 let me = null;
-const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, settings: loadSettings };
+const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, content: loadContent, settings: loadSettings };
 let current = "today";
 function show(name) {
   current = name;
@@ -236,6 +236,53 @@ async function loadStats() {
     $("#team").innerHTML = Object.entries(byUser).map(([n, v]) => `<div class="row"><span>${esc(n)}</span><span class="n">взял ${v.taken || 0} · написал ${v.contacted || 0} · сделок ${v.deal || 0}</span></div>`).join("") || `<div class="empty">пока никто не брал лидов</div>`;
     $("#sources").innerHTML = s.sources.map((x) => { const [name, rest] = x.split(" — "); return `<div class="row"><span>${esc(name)}</span><span class="n">${esc(rest || "")}</span></div>`; }).join("");
   } catch (e) { toast(e.message); }
+}
+
+/* ---------- Контент-фабрика ---------- */
+const C = { status: "" };
+const KIND = { post: "Пост", carousel: "Карусель", reel: "Видео", magnet: "Лид-магнит" };
+const CSTATUS = { draft: "черновик", scheduled: "в плане", published: "вышло", rejected: "удалено" };
+$$("#c-seg button").forEach((b) => b.onclick = () => { $$("#c-seg button").forEach((x) => x.classList.toggle("on", x === b)); C.status = b.dataset.cstatus; haptic.sel(); loadContent(); });
+$("#c-make").onclick = async () => {
+  const topic = $("#c-topic").value.trim(); if (!topic) return toast("Напишите тему");
+  $("#c-make").disabled = true; toast("Пишу…");
+  try { await api("/api/content", { method: "POST", body: JSON.stringify({ kind: $("#c-kind").value, topic }) }); $("#c-topic").value = ""; haptic.ok(); loadContent(); }
+  catch (e) { haptic.err(); toast(e.message); } finally { $("#c-make").disabled = false; }
+};
+async function cact(id, body) { try { const r = await api("/api/content/" + id, { method: "POST", body: JSON.stringify(body) }); haptic.ok(); if (r.errors?.length) toast(r.errors.join("; ")); else if (r.results) toast("Опубликовано"); loadContent(); } catch (e) { haptic.err(); toast(e.message); } }
+function contentRow(it) {
+  const when = it.scheduled_at && it.status === "scheduled" ? " · " + new Date(it.scheduled_at).toLocaleString("ru", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  const links = (it.published || []).map((p) => p.url ? `<a href="${esc(p.url)}" target="_blank">${esc(p.platform)}</a>` : esc(p.platform)).join(" ");
+  const cover = it.images?.[0] ? `<img src="${esc(it.images[0])}" alt="">` : it.video ? `<span class="score">▶</span>` : `<span class="score">${KIND[it.kind]?.[0] || "?"}</span>`;
+  const act = it.status === "published" ? "" : `<div class="c-actions">
+      <button data-a="publish">${it.status === "scheduled" ? "Сейчас" : "Опубликовать"}</button>
+      ${it.status === "scheduled" ? `<button data-a="draft">Снять</button>` : `<button data-a="pick">Когда</button>`}
+      <button data-a="reject" class="danger">Удалить</button>
+      <input type="datetime-local" class="hidden c-when"></div>`;
+  return `<div class="lead c-item" data-id="${it.id}"><div class="inner">${cover}<div class="body">
+    <div class="title">${esc(it.title || it.topic)}</div>
+    <div class="sub">${esc((it.text || "").replace(/<[^>]+>/g, "").slice(0, 160))}</div>
+    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${CSTATUS[it.status] || it.status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${esc(it.slug)}" target="_blank">страница</a></span>` : ""}</div>
+    ${act}</div></div></div>`;
+}
+async function loadContent() {
+  try {
+    const [{ items }, ch] = await Promise.all([api("/api/content?" + new URLSearchParams({ status: C.status })), api("/api/content/channels").catch(() => ({ channels: [] }))]);
+    $("#c-channels").textContent = ch.channels.length ? "→ " + ch.channels.map((c) => c.label).join(", ") : "площадки: /channels в боте";
+    const list = $("#content-list");
+    list.innerHTML = items.map(contentRow).join("") || `<div class="empty">Пока пусто — напишите тему выше или /post в боте</div>`;
+    $$(".c-item", list).forEach((el) => {
+      const id = el.dataset.id;
+      $$("[data-a]", el).forEach((b) => b.onclick = (ev) => {
+        ev.stopPropagation(); haptic.tap();
+        const a = b.dataset.a;
+        if (a === "pick") { const w = $(".c-when", el); w.classList.toggle("hidden"); w.onchange = () => cact(id, { action: "schedule", at: w.value }); return; }
+        if (a === "reject" && !confirm("Удалить?")) return;
+        cact(id, { action: a });
+      });
+      $(".title", el).onclick = () => { const t = $(".sub", el); t.classList.toggle("full"); };
+    });
+  } catch (e) { $("#content-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 
 /* ---------- Настройки ---------- */

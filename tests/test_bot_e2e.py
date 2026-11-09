@@ -216,7 +216,7 @@ async def test_setup_group_creates_topics_and_routes_leads(env):
     texts = await env.cmd("/setup_group", chat_id=group)
     assert "Готово" in texts[-1]
     created = [d["name"] for n, d in env.session.calls if n == "CreateForumTopic"]
-    assert "🔥 Горячие" in created and len(created) == 11
+    assert "🔥 Горячие" in created and len(created) == 12
     assert await env.db.get_setting("workspace_chat_id") == str(group)
     # лид уходит в тему, а не в личку
     env.session.reset()

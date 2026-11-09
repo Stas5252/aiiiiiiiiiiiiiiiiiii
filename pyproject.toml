@@ -1,7 +1,7 @@
 [project]
 name = "leadhunter"
 version = "0.1.0"
-description = "Telegram-бот, который ищет лидов на сайты, ИИ-автоматизацию и ИИ-мультики по чатам, картам, биржам и соцсетям"
+description = "Telegram-бот: ищет лидов по чатам, картам, биржам и соцсетям и делает контент (посты, карусели, видео, лид-магниты)"
 requires-python = ">=3.11"
 dependencies = [
     "aiogram>=3.13",
@@ -16,6 +16,7 @@ dependencies = [
     "pymorphy3>=2.0",
     "pymorphy3-dicts-ru",
     "aiohttp>=3.9",
+    "pillow>=10.1",
 ]
 
 [project.optional-dependencies]

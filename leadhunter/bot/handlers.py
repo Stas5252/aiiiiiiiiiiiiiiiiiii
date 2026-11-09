@@ -39,6 +39,9 @@ HELP = """Я ищу лидов на сайты, ботов, ИИ-автомат�
 /tg_find запрос · /tg_join @chat · /tg_chats · /chats_rating — какие чаты приносят лидов
 /discover ниша — найти и оценить чаты по нише (ИИ смотрит последние сообщения)
 
+<b>Контент-фабрика</b> — /content
+/post, /carousel, /reel, /magnet тема · /ideas · /plan · /queue · /channels · /voice · /brand · /autopilot on
+
 /sources — состояние источников"""
 
 

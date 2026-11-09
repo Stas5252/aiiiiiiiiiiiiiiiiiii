@@ -77,6 +77,26 @@
     </div>
   </section>
 
+  <!-- Экран: Контент-фабрика -->
+  <section id="screen-content" class="screen">
+    <header class="top"><h1>Контент</h1></header>
+    <div class="card">
+      <div class="card-title">Сделать <span class="hint" id="c-channels"></span></div>
+      <div class="add-row">
+        <select id="c-kind"><option value="post">Пост</option><option value="carousel">Карусель</option><option value="reel">Видео</option><option value="magnet">Лид-магнит</option></select>
+        <input id="c-topic" placeholder="тема, например: сколько стоит сайт в 2025">
+        <button class="plus" id="c-make">→</button>
+      </div>
+    </div>
+    <div class="segmented" id="c-seg">
+      <button data-cstatus="" class="on">Все</button>
+      <button data-cstatus="draft">Черновики</button>
+      <button data-cstatus="scheduled">В плане</button>
+      <button data-cstatus="published">Вышло</button>
+    </div>
+    <div id="content-list" class="list"></div>
+  </section>
+
   <!-- Экран: Настройки (отдельная страница, BackButton) -->
   <section id="screen-settings" class="screen">
     <header class="top">
@@ -145,6 +165,7 @@
     <button data-screen="today" class="on"><span class="ic">◉</span>Сегодня</button>
     <button data-screen="leads"><span class="ic">☰</span>Лиды</button>
     <button data-screen="stats"><span class="ic">◔</span>Отчёт</button>
+    <button data-screen="content"><span class="ic">✎</span>Контент</button>
   </nav>
 
   <!-- Шторка лида -->

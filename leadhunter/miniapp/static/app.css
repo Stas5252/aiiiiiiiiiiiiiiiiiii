@@ -167,3 +167,11 @@ details.card[open] summary { margin-bottom: 10px; }
 .sheet .primary { width: 100%; padding: 13px; border-radius: 12px; background: var(--btn); color: var(--btn-fg); font-weight: 600; margin-top: 10px; font-size: 16px; }
 .sheet .history { margin-top: 14px; font-size: 12px; color: var(--hint); line-height: 1.6; }
 .toast { position: fixed; bottom: calc(80px + var(--sa-bottom)); left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 9px 16px; border-radius: 12px; z-index: 20; font-size: 14px; max-width: 90vw; }
+
+/* контент-фабрика */
+.c-item .inner img { width: 56px; height: 56px; border-radius: 12px; object-fit: cover; flex: 0 0 auto; }
+.c-item .sub.full { -webkit-line-clamp: unset; white-space: pre-wrap; }
+.c-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.c-actions button { padding: 6px 10px; border-radius: 9px; background: var(--btn); color: var(--btn-fg); font-size: 13px; }
+.c-actions button.danger { background: var(--bg2); color: var(--hot); }
+.c-actions input { width: 100%; margin-top: 6px; }
