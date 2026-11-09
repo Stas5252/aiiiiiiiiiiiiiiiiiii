@@ -167,3 +167,32 @@ async def test_disabled_without_key_makes_no_calls():
     m = media(boom, key="")
     assert not (m.images_enabled or m.video_enabled or m.tts_enabled)
     assert await m.image("x") is None and await m.speech("x") is None and await m.video("x") is None
+
+
+async def test_tts_rate_limit_waits_then_falls_back(monkeypatch):
+    """Минутный лимит → пауза и повтор; дневной лимит → lite-модель."""
+    from leadhunter.content import gemini as g
+
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(g, "_sleep", fake_sleep)
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        calls.append(body["model"])
+        if len(calls) == 1:
+            return httpx.Response(429, json={"error": {"message": "Rate limit exceeded (limit: 3 requests per minute). Please retry in 7s"}})
+        if len(calls) == 2:
+            return httpx.Response(429, json={"error": {"message": "Rate limit exceeded (limit: 10 requests per day). Please retry in 14h45m"}})
+        wav = b"RIFF" + b"\x00" * 40
+        return httpx.Response(200, json={"steps": [{"type": "model_output", "content": [{"type": "audio", "mime_type": "audio/wav",
+                                                                                          "data": base64.b64encode(wav).decode()}]}]})
+
+    media = g.GeminiMedia("AIzaTest", client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    out = await media.speech("Привет")
+    assert out and out[:4] == b"RIFF"
+    assert calls == [g.DEFAULTS["tts_model"], g.DEFAULTS["tts_model"], g.TTS_FALLBACK] and sleeps == [9.0]
