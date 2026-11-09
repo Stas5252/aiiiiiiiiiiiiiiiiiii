@@ -2,25 +2,41 @@ import html
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from ..db import Database
 from ..sources.base import Source
+from ..sources.telegram_chats import TelegramChatsSource
 
 HELP = """Я ищу лидов на сайты, ботов, ИИ-автоматизацию и ИИ-мультики и присылаю их сюда.
 
-/stats — сколько лидов за сутки по источникам
+<b>Лиды</b>
+/stats — лиды за сутки по источникам
 /leads [N] — последние N лидов
-/sources — какие источники включены
-/keywords — текущие ключевые слова
-/kw_add topic|intent|negative слово — добавить слово
+/digest — сводка за 24 часа прямо сейчас
+/export — выгрузить лидов в CSV
+
+<b>Фильтры</b>
+/keywords — словарь
+/kw_add topic|intent|negative слово [услуга] — добавить слово
 /kw_del слово — удалить слово
-/threshold N — минимальный балл для уведомления
-/pause и /resume — приостановить/возобновить уведомления"""
+/threshold N — минимальный балл для уведомления (0–10)
+/profile [текст] — что продаёт студия (для ИИ)
+/block @username — не показывать автора; /unblock @username
+/ignored — игнор-лист чатов и авторов
+/pause и /resume — пауза уведомлений
+
+<b>Telegram-чаты</b> (если подключён аккаунт)
+/tg_find запрос — найти публичные чаты по названию
+/tg_join @chat — вступить в чат (или по ссылке-приглашению)
+/tg_chats — где состоит аккаунт
+
+/sources — состояние источников"""
 
 
 def build_router(db: Database, sources: list[Source], static_owners: list[int]) -> Router:
     router = Router()
+    tg = next((s for s in sources if isinstance(s, TelegramChatsSource)), None)
 
     async def is_owner(user_id: int) -> bool:
         if static_owners:
@@ -62,38 +78,51 @@ def build_router(db: Database, sources: list[Source], static_owners: list[int]) 
         if not rows:
             await m.answer("Лидов пока нет.")
             return
-        lines = []
-        for r in rows:
-            head = html.escape((r["title"] or r["text"] or "")[:80])
-            link = f' — <a href="{html.escape(r["url"])}">ссылка</a>' if r["url"] else ""
-            lines.append(f"#{r['id']} [{r['status']}] {r['score']}/10 {r['source']}: {head}{link}")
-        await m.answer("\n".join(lines), disable_web_page_preview=True)
+        await m.answer("\n".join(_lead_line(r) for r in rows))
+
+    @router.message(Command("digest"))
+    async def digest(m: Message):
+        if await is_owner(m.from_user.id):
+            await m.answer(await build_digest(db))
+
+    @router.message(Command("export"))
+    async def export(m: Message):
+        if not await is_owner(m.from_user.id):
+            return
+        data = await db.export_csv()
+        await m.answer_document(BufferedInputFile(data, filename="leads.csv"), caption="Последние 1000 лидов")
 
     @router.message(Command("sources"))
     async def sources_cmd(m: Message):
         if await is_owner(m.from_user.id):
-            await m.answer("Источники:\n" + "\n".join(f"• {s.name} (каждые {s.interval}с)" for s in sources))
+            await m.answer("Источники:\n" + "\n".join(f"• {html.escape(s.status_line())}" for s in sources))
 
     @router.message(Command("keywords"))
     async def keywords(m: Message):
         if not await is_owner(m.from_user.id):
             return
         kw = await db.get_keywords()
+        by_cat: dict[str, list[str]] = {}
+        for w, cat in kw.topic.items():
+            by_cat.setdefault(cat, []).append(w)
+        topic = "\n".join(f"  {cat}: {', '.join(ws)}" for cat, ws in by_cat.items())
         await m.answer(
-            f"<b>Тема</b>: {', '.join(kw.topic)}\n\n<b>Намерение</b>: {', '.join(kw.intent)}\n\n"
-            f"<b>Стоп-слова</b>: {', '.join(kw.negative)}"
+            f"<b>Тема</b>:\n{html.escape(topic)}\n\n<b>Намерение</b>: {html.escape(', '.join(kw.intent))}\n\n"
+            f"<b>Стоп-слова</b>: {html.escape(', '.join(kw.negative))}"
         )
 
     @router.message(Command("kw_add"))
     async def kw_add(m: Message, command: CommandObject):
         if not await is_owner(m.from_user.id):
             return
-        parts = (command.args or "").split(maxsplit=1)
-        if len(parts) != 2 or parts[0] not in ("topic", "intent", "negative"):
-            await m.answer("Формат: /kw_add topic|intent|negative слово")
+        parts = (command.args or "").split()
+        if len(parts) < 2 or parts[0] not in ("topic", "intent", "negative"):
+            await m.answer("Формат: /kw_add topic|intent|negative слово [услуга]\nНапример: /kw_add topic квиз сайт")
             return
-        await db.add_keyword(parts[0], parts[1])
-        await m.answer(f"Добавил «{parts[1]}» в {parts[0]}")
+        kind, word = parts[0], parts[1]
+        category = parts[2] if kind == "topic" and len(parts) > 2 else None
+        await db.add_keyword(kind, word, category)
+        await m.answer(f"Добавил «{word}» в {kind}" + (f" ({category})" if category else ""))
 
     @router.message(Command("kw_del"))
     async def kw_del(m: Message, command: CommandObject):
@@ -115,6 +144,43 @@ def build_router(db: Database, sources: list[Source], static_owners: list[int]) 
         await db.set_setting("threshold", command.args)
         await m.answer(f"Порог: {command.args}")
 
+    @router.message(Command("profile"))
+    async def profile(m: Message, command: CommandObject):
+        if not await is_owner(m.from_user.id):
+            return
+        if not command.args:
+            cur = await db.get_setting("profile") or "(из .env)"
+            await m.answer(f"Профиль студии для ИИ:\n{html.escape(cur)}\n\nИзменить: /profile текст")
+            return
+        await db.set_setting("profile", command.args.strip())
+        await m.answer("Профиль обновлён — ИИ будет оценивать лидов с учётом него.")
+
+    @router.message(Command("block"))
+    async def block(m: Message, command: CommandObject):
+        if not await is_owner(m.from_user.id):
+            return
+        if not command.args:
+            await m.answer("Формат: /block @username")
+            return
+        await db.add_ignored("author", command.args.strip())
+        await m.answer(f"Автор {html.escape(command.args.strip())} в игноре")
+
+    @router.message(Command("unblock"))
+    async def unblock(m: Message, command: CommandObject):
+        if not await is_owner(m.from_user.id):
+            return
+        n = await db.remove_ignored((command.args or "").strip())
+        await m.answer("Убрал из игнора" if n else "Такого в игноре нет")
+
+    @router.message(Command("ignored"))
+    async def ignored(m: Message):
+        if not await is_owner(m.from_user.id):
+            return
+        ig = await db.get_ignored()
+        chats = "\n".join(f"  {html.escape(label or key)} ({key})" for key, label in ig["chat"].items()) or "  —"
+        authors = ", ".join(html.escape(k) for k in ig["author"]) or "—"
+        await m.answer(f"<b>Чаты</b>:\n{chats}\n<b>Авторы</b>: {authors}\n\nСнять: /unblock ключ")
+
     @router.message(Command("pause"))
     async def pause(m: Message):
         if await is_owner(m.from_user.id):
@@ -127,6 +193,56 @@ def build_router(db: Database, sources: list[Source], static_owners: list[int]) 
             await db.set_setting("paused", "0")
             await m.answer("Уведомления включены.")
 
+    # --- Telegram-чаты через userbot ---
+    @router.message(Command("tg_find"))
+    async def tg_find(m: Message, command: CommandObject):
+        if not await is_owner(m.from_user.id):
+            return
+        if not tg:
+            await m.answer("Telegram-аккаунт не подключён (TG_API_ID / TG_API_HASH).")
+            return
+        if not command.args:
+            await m.answer("Формат: /tg_find фриланс заказы")
+            return
+        found = await tg.find_chats(command.args)
+        if not found:
+            await m.answer("Ничего не нашёл.")
+            return
+        lines = [
+            f"{'👥' if c['is_group'] else '📢'} {html.escape(c['title'])} — @{c['username']}"
+            + (f" ({c['members']})" if c["members"] else "")
+            for c in found
+        ]
+        await m.answer("\n".join(lines) + "\n\nВступить: /tg_join @username")
+
+    @router.message(Command("tg_join"))
+    async def tg_join(m: Message, command: CommandObject):
+        if not await is_owner(m.from_user.id):
+            return
+        if not tg:
+            await m.answer("Telegram-аккаунт не подключён.")
+            return
+        if not command.args:
+            await m.answer("Формат: /tg_join @chat или ссылка-приглашение")
+            return
+        try:
+            title = await tg.join(command.args.strip())
+            await m.answer(f"Вступил: {html.escape(title)}. Новые сообщения уже отслеживаются.")
+        except Exception as e:
+            await m.answer(f"Не получилось: {html.escape(str(e))}")
+
+    @router.message(Command("tg_chats"))
+    async def tg_chats(m: Message):
+        if not await is_owner(m.from_user.id):
+            return
+        if not tg:
+            await m.answer("Telegram-аккаунт не подключён.")
+            return
+        chats = await tg.list_chats()
+        lines = [f"• {html.escape(c['title'])}" + (f" (@{c['username']})" if c["username"] else "") for c in chats[:80]]
+        await m.answer(f"Чатов: {len(chats)}\n" + "\n".join(lines))
+
+    # --- кнопки под карточкой ---
     @router.callback_query(F.data.startswith("st:"))
     async def set_status(cq: CallbackQuery):
         if not await is_owner(cq.from_user.id):
@@ -134,8 +250,62 @@ def build_router(db: Database, sources: list[Source], static_owners: list[int]) 
             return
         _, lead_id, status = cq.data.split(":")
         await db.set_status(int(lead_id), status)
-        labels = {"contacted": "✅ написал", "hot": "🔥 горячий", "spam": "🚫 не лид"}
+        labels = {"contacted": "✅ написал", "hot": "🔥 горячий — ИИ учтёт как пример", "spam": "🚫 не лид — ИИ учтёт как пример"}
         await cq.message.edit_reply_markup(reply_markup=None)
-        await cq.answer(f"#{lead_id}: {labels.get(status, status)}")
+        await cq.answer(f"#{lead_id}: {labels.get(status, status)}", show_alert=False)
+
+    @router.callback_query(F.data.startswith("dr:"))
+    async def show_draft(cq: CallbackQuery):
+        if not await is_owner(cq.from_user.id):
+            await cq.answer()
+            return
+        row = await db.get_lead(int(cq.data.split(":")[1]))
+        if not row or not row["draft"]:
+            await cq.answer("Черновика нет")
+            return
+        # Отдельным сообщением без разметки — чтобы скопировать одним тапом
+        await cq.message.answer(f"✍️ Черновик для #{row['id']}:\n\n<code>{html.escape(row['draft'])}</code>")
+        await cq.answer()
+
+    @router.callback_query(F.data.startswith("mute:"))
+    async def mute_chat(cq: CallbackQuery):
+        if not await is_owner(cq.from_user.id):
+            await cq.answer()
+            return
+        row = await db.get_lead(int(cq.data.split(":")[1]))
+        if not row or not row["chat_key"]:
+            await cq.answer("У этого лида нет чата")
+            return
+        await db.add_ignored("chat", row["chat_key"], row["chat_title"] or "")
+        await cq.answer(f"Чат «{row['chat_title']}» в игноре. Снять: /unblock {row['chat_key']}", show_alert=True)
 
     return router
+
+
+def _lead_line(r) -> str:
+    head = html.escape((r["title"] or r["text"] or "")[:80])
+    link = f' — <a href="{html.escape(r["url"])}">ссылка</a>' if r["url"] else ""
+    service = f" 🎯{r['service']}" if r["service"] else ""
+    return f"#{r['id']} [{r['status']}] {r['score']}/10 {r['source']}{service}: {head}{link}"
+
+
+async def build_digest(db: Database, hours: int = 24) -> str:
+    rows = await db.leads_since(hours)
+    if not rows:
+        return f"За {hours}ч лидов нет."
+    by_source: dict[str, int] = {}
+    by_service: dict[str, int] = {}
+    for r in rows:
+        by_source[r["source"]] = by_source.get(r["source"], 0) + 1
+        if r["service"]:
+            by_service[r["service"]] = by_service.get(r["service"], 0) + 1
+    untouched = [r for r in rows if r["status"] == "new"]
+    top = sorted(untouched, key=lambda r: -r["score"])[:5]
+    lines = [f"📊 <b>Дайджест за {hours}ч</b>: {len(rows)} лидов, не разобрано {len(untouched)}"]
+    lines.append("По источникам: " + ", ".join(f"{s} {c}" for s, c in sorted(by_source.items(), key=lambda x: -x[1])))
+    if by_service:
+        lines.append("По услугам: " + ", ".join(f"{s} {c}" for s, c in sorted(by_service.items(), key=lambda x: -x[1])))
+    if top:
+        lines.append("\n🔥 <b>Топ неразобранных</b>:")
+        lines += [_lead_line(r) for r in top]
+    return "\n".join(lines)

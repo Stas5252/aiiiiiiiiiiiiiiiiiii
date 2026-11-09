@@ -1,6 +1,9 @@
+import csv
 import hashlib
+import io
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -18,17 +21,22 @@ CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL, external_id TEXT NOT NULL, url TEXT, title TEXT, text TEXT,
     author TEXT, contact TEXT, score INTEGER NOT NULL, matched TEXT, summary TEXT,
+    service TEXT, budget TEXT, urgency TEXT, draft TEXT, chat_key TEXT, chat_title TEXT,
     status TEXT NOT NULL DEFAULT 'new', found_at TEXT NOT NULL, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS leads_created ON leads(created_at);
-CREATE TABLE IF NOT EXISTS keywords (kind TEXT NOT NULL, word TEXT NOT NULL, PRIMARY KEY (kind, word));
+CREATE TABLE IF NOT EXISTS keywords (
+    kind TEXT NOT NULL, word TEXT NOT NULL, category TEXT, PRIMARY KEY (kind, word)
+);
+CREATE TABLE IF NOT EXISTS ignored (kind TEXT NOT NULL, key TEXT NOT NULL, label TEXT, PRIMARY KEY (kind, key));
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
 def content_hash(text: str) -> str:
-    # Один и тот же запрос часто постят в десяток чатов — склеиваем по нормализованному тексту
-    return hashlib.sha1(normalize(text).encode()).hexdigest()
+    # Один и тот же запрос часто постят в десяток чатов, меняя ссылки/эмодзи — сравниваем только буквы и цифры
+    core = re.sub(r"[^\w]+", "", re.sub(r"https?://\S+", "", normalize(text)))
+    return hashlib.sha1(core.encode()).hexdigest()
 
 
 def _now() -> str:
@@ -61,9 +69,9 @@ class Database:
         cur = await self.conn.execute("SELECT COUNT(*) FROM keywords")
         if (await cur.fetchone())[0]:
             return
-        rows = [("topic", w) for w in DEFAULT_TOPIC] + [("intent", w) for w in DEFAULT_INTENT]
-        rows += [("negative", w) for w in DEFAULT_NEGATIVE]
-        await self.conn.executemany("INSERT OR IGNORE INTO keywords VALUES (?, ?)", rows)
+        rows = [("topic", w, cat) for w, cat in DEFAULT_TOPIC.items()]
+        rows += [("intent", w, None) for w in DEFAULT_INTENT] + [("negative", w, None) for w in DEFAULT_NEGATIVE]
+        await self.conn.executemany("INSERT OR IGNORE INTO keywords VALUES (?, ?, ?)", rows)
         await self.conn.commit()
 
     # --- дедуп ---
@@ -83,16 +91,23 @@ class Database:
         return cur.rowcount == 1
 
     # --- лиды ---
-    async def save_lead(self, lead: Lead, score: int, res: ScoreResult, summary: str | None) -> int:
+    async def save_lead(self, lead: Lead, score: int, res: ScoreResult, *, summary: str | None = None,
+                        service: str = "", budget: str = "", urgency: str = "", draft: str = "") -> int:
         matched = json.dumps({"topic": res.topic, "intent": res.intent, "negative": res.negative}, ensure_ascii=False)
         cur = await self.conn.execute(
-            "INSERT INTO leads (source, external_id, url, title, text, author, contact, score, matched, summary, found_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO leads (source, external_id, url, title, text, author, contact, score, matched, summary,"
+            " service, budget, urgency, draft, chat_key, chat_title, found_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (lead.source, lead.external_id, lead.url, lead.title, lead.text, lead.author, lead.contact,
-             score, matched, summary, lead.found_at.isoformat(), _now()),
+             score, matched, summary, service, budget, urgency, draft,
+             lead.extra.get("chat_key"), lead.extra.get("chat_title"), lead.found_at.isoformat(), _now()),
         )
         await self.conn.commit()
         return cur.lastrowid
+
+    async def get_lead(self, lead_id: int) -> aiosqlite.Row | None:
+        cur = await self.conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        return await cur.fetchone()
 
     async def set_status(self, lead_id: int, status: str) -> None:
         await self.conn.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
@@ -102,6 +117,19 @@ class Database:
         cur = await self.conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT ?", (limit,))
         return list(await cur.fetchall())
 
+    async def leads_by_status(self, status: str, limit: int = 5) -> list[aiosqlite.Row]:
+        cur = await self.conn.execute(
+            "SELECT * FROM leads WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit)
+        )
+        return list(await cur.fetchall())
+
+    async def leads_since(self, hours: int) -> list[aiosqlite.Row]:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        cur = await self.conn.execute(
+            "SELECT * FROM leads WHERE created_at >= ? ORDER BY score DESC, id DESC", (since,)
+        )
+        return list(await cur.fetchall())
+
     async def stats(self, hours: int = 24) -> list[tuple[str, int]]:
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         cur = await self.conn.execute(
@@ -109,22 +137,57 @@ class Database:
         )
         return [(r[0], r[1]) for r in await cur.fetchall()]
 
+    async def export_csv(self, limit: int = 1000) -> bytes:
+        cur = await self.conn.execute(
+            "SELECT id, created_at, source, score, status, service, budget, title, text, author, contact, url, summary"
+            " FROM leads ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        rows = await cur.fetchall()
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([d[0] for d in cur.description])
+        w.writerows(tuple(r) for r in rows)
+        return buf.getvalue().encode("utf-8-sig")  # BOM — чтобы Excel открыл кириллицу
+
     # --- ключевые слова ---
     async def get_keywords(self) -> Keywords:
-        cur = await self.conn.execute("SELECT kind, word FROM keywords")
-        kw = Keywords(topic=[], intent=[], negative=[])
-        for kind, word in await cur.fetchall():
-            getattr(kw, kind).append(word)
+        cur = await self.conn.execute("SELECT kind, word, category FROM keywords")
+        kw = Keywords(topic={}, intent=[], negative=[])
+        for kind, word, category in await cur.fetchall():
+            if kind == "topic":
+                kw.topic[word] = category or "другое"
+            else:
+                getattr(kw, kind).append(word)
         return kw
 
-    async def add_keyword(self, kind: str, word: str) -> None:
-        await self.conn.execute("INSERT OR IGNORE INTO keywords VALUES (?, ?)", (kind, normalize(word)))
+    async def add_keyword(self, kind: str, word: str, category: str | None = None) -> None:
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO keywords VALUES (?, ?, ?)",
+            (kind, normalize(word), category if kind == "topic" else None),
+        )
         await self.conn.commit()
 
     async def remove_keyword(self, word: str) -> int:
         cur = await self.conn.execute("DELETE FROM keywords WHERE word = ?", (normalize(word),))
         await self.conn.commit()
         return cur.rowcount
+
+    # --- игнор-листы: шумные чаты и авторы-спамеры ---
+    async def add_ignored(self, kind: str, key: str, label: str = "") -> None:
+        await self.conn.execute("INSERT OR REPLACE INTO ignored VALUES (?, ?, ?)", (kind, key.lower(), label))
+        await self.conn.commit()
+
+    async def remove_ignored(self, key: str) -> int:
+        cur = await self.conn.execute("DELETE FROM ignored WHERE key = ?", (key.lower(),))
+        await self.conn.commit()
+        return cur.rowcount
+
+    async def get_ignored(self) -> dict[str, dict[str, str]]:
+        cur = await self.conn.execute("SELECT kind, key, label FROM ignored")
+        out: dict[str, dict[str, str]] = {"chat": {}, "author": {}}
+        for kind, key, label in await cur.fetchall():
+            out.setdefault(kind, {})[key] = label or ""
+        return out
 
     # --- настройки ---
     async def get_setting(self, key: str, default: str | None = None) -> str | None:

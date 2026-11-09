@@ -5,6 +5,7 @@ def test_request_with_intent_scores_high():
     r = score_text("Ребята, ищу кто сделает сайт под ключ, бюджет 50к", Keywords())
     assert r.score >= 5
     assert "сайт" in r.topic and "ищу" in r.intent
+    assert r.services == ["сайт"]
 
 
 def test_competitor_offer_is_penalized():
@@ -28,6 +29,11 @@ def test_yo_normalization_and_stems():
 
 
 def test_intent_implied_for_boards():
-    text = "Разработка сайта-визитки для стоматологии"
+    text = "Разработка сайта для стоматологии"
     assert score_text(text, Keywords()).score == 2
     assert score_text(text, Keywords(), intent_implied=True).score == 5
+
+
+def test_services_detected_in_order():
+    r = score_text("Нужен бот и мультик для детского сада, автоматизация записи", Keywords())
+    assert r.services == ["бот", "автоматизация", "мультик"]

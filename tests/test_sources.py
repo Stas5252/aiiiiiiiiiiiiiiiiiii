@@ -1,5 +1,7 @@
 from leadhunter.sources.hh import parse_vacancies
+from leadhunter.sources.instagram import parse_media
 from leadhunter.sources.rss_boards import parse_feed
+from leadhunter.sources.threads import parse_threads
 from leadhunter.sources.vk import parse_posts
 from leadhunter.sources.yandex_maps import parse_features
 
@@ -58,3 +60,25 @@ def test_parse_vk_posts():
     assert leads[0].contact == "https://vk.com/id100"
     assert leads[1].contact == "https://vk.com/club200"
     assert leads[0].url == "https://vk.com/wall100_5"
+
+
+def test_parse_threads_skips_replies():
+    data = {"data": [
+        {"id": "1", "text": "Нужен сайт для салона", "permalink": "https://www.threads.net/@anna/post/x",
+         "timestamp": "2026-11-09T05:42:03+0000", "username": "anna", "is_reply": False},
+        {"id": "2", "text": "ответ", "username": "bob", "is_reply": True},
+    ]}
+    (lead,) = parse_threads(data)
+    assert lead.source == "threads" and lead.external_id == "1"
+    assert lead.author == "@anna" and lead.contact == "https://www.threads.net/@anna"
+    assert lead.found_at.year == 2026 and lead.found_at.tzinfo is not None
+
+
+def test_parse_instagram_media():
+    data = {"data": [
+        {"id": "9", "caption": "Ищу кто сделает сайт #нуженсайт", "permalink": "https://www.instagram.com/p/abc/",
+         "timestamp": "2026-11-09T05:42:03+0000"},
+        {"id": "10", "permalink": "https://www.instagram.com/p/def/"},
+    ]}
+    (lead,) = parse_media(data, "нуженсайт")
+    assert lead.source == "instagram" and lead.title == "#нуженсайт" and lead.external_id == "9"

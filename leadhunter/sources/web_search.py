@@ -17,8 +17,8 @@ class WebSearchSource(Source):
 
     name = "web"
 
-    def __init__(self, s: Settings):
-        self.sites = s.web_search_sites
+    def __init__(self, s: Settings, sites: list[str] | None = None):
+        self.sites = sites if sites is not None else s.web_search_sites
         self.phrases = s.search_phrases
         self.interval = s.web_search_interval
         self.serper_key = s.serper_api_key
