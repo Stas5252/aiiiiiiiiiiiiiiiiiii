@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS landing_leads (
 );
 """
 
-KINDS = {"post": "✍️ Пост", "carousel": "🎠 Карусель", "reel": "🎬 Видео", "magnet": "🧲 Лид-магнит", "idea": "💡 Идея"}
+KINDS = {"post": "✍️ Пост", "carousel": "🎠 Карусель", "reel": "🎬 Видео", "toon": "🎨 Мультик (код)", "aivideo": "🤖 ИИ-мультик",
+         "magnet": "🧲 Лид-магнит", "idea": "💡 Идея"}
 STATUSES = {"draft": "черновик", "scheduled": "запланировано", "published": "опубликовано", "rejected": "отклонено"}
 
 
