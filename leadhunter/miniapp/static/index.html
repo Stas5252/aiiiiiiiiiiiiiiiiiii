@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>LeadHunter</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="/static/app.css">
@@ -14,8 +16,13 @@
   <section id="screen-today" class="screen active">
     <header class="top">
       <h1>Сегодня</h1>
-      <button class="icon" id="open-settings" aria-label="Настройки">⚙︎</button>
+      <button class="icon" id="open-settings" aria-label="Настройки"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></button>
     </header>
+    <div id="today-setup" class="setup hidden">
+      <div class="setup-text"><div class="label">Осталось настроить</div><div id="today-setup-list" class="hint"></div></div>
+      <button class="setup-go" id="today-setup-go">Настроить</button>
+      <button class="setup-x" id="today-setup-x" aria-label="Скрыть">✕</button>
+    </div>
     <div id="today-kpi" class="kpi-row"></div>
     <div id="today-alert" class="alert hidden"></div>
     <h2 class="section-title">Нужно взять <span id="today-new-count" class="count"></span></h2>
@@ -77,6 +84,26 @@
     </div>
   </section>
 
+  <!-- Экран: Контент-фабрика -->
+  <section id="screen-content" class="screen">
+    <header class="top"><h1>Контент</h1></header>
+    <div class="card">
+      <div class="card-title">Сделать <span class="hint" id="c-channels"></span></div>
+      <div class="add-row">
+        <select id="c-kind"><option value="post">Пост</option><option value="carousel">Карусель</option><option value="reel">Видео</option><option value="magnet">Лид-магнит</option></select>
+        <input id="c-topic" placeholder="О чём?">
+        <button class="plus" id="c-make">→</button>
+      </div>
+    </div>
+    <div class="segmented" id="c-seg">
+      <button data-cstatus="" class="on">Все</button>
+      <button data-cstatus="draft">Черновики</button>
+      <button data-cstatus="scheduled">В плане</button>
+      <button data-cstatus="published">Вышло</button>
+    </div>
+    <div id="content-list" class="list"></div>
+  </section>
+
   <!-- Экран: Настройки (отдельная страница, BackButton) -->
   <section id="screen-settings" class="screen">
     <header class="top">
@@ -100,6 +127,74 @@
         <div class="label">Что продаёте <span class="hint">— ИИ оценивает лидов по этому описанию</span></div>
         <textarea id="s-profile" rows="3"></textarea>
       </div>
+    </div>
+
+    <div class="card" id="card-niche">
+      <div class="card-title">Ниша</div>
+      <select id="s-niche"></select>
+      <p class="hint">Меняет профиль, фразы, словарь и рубрики</p>
+    </div>
+
+    <div class="card" id="card-fresh">
+      <div class="card-title">Свежесть бирж</div>
+      <div class="row-setting">
+        <div><div class="label">Возраст отклика</div><div class="hint" id="s-fh-txt">не старше 6 ч</div></div>
+        <div class="stepper"><button data-fstep="-0.5" data-f="h" aria-label="меньше">−</button><span id="s-fh">6</span><button data-fstep="0.5" data-f="h" aria-label="больше">+</button></div>
+      </div>
+      <div class="row-setting">
+        <div><div class="label">Конкуренция</div><div class="hint" id="s-fc-txt">не больше 20 откликов</div></div>
+        <div class="stepper"><button data-fstep="-5" data-f="c" aria-label="меньше">−</button><span id="s-fc">20</span><button data-fstep="5" data-f="c" aria-label="больше">+</button></div>
+      </div>
+      <p class="hint">Kwork, Weblancer, Freelance.ru, FL, hh — старое и перегретое не присылаю</p>
+    </div>
+
+    <div class="card" id="card-content">
+      <div class="card-title">Контент</div>
+      <div class="row-setting col">
+        <div class="label">Тон голоса</div>
+        <textarea id="s-voice" rows="3" placeholder="Коротко, по делу, без воды. На «вы», с лёгкой иронией"></textarea>
+      </div>
+      <div class="row-setting col">
+        <div class="label">Рубрики <span class="hint">— через «;»</span></div>
+        <input id="s-pillars" type="text" placeholder="кейсы; ошибки клиентов; цены">
+      </div>
+      <div class="row-setting">
+        <div><div class="label">Автопилот</div><div class="hint">каждый день черновик, публикую после вашего ✅</div></div>
+        <label class="switch"><input type="checkbox" id="s-autopilot"><span></span></label>
+      </div>
+      <div class="row-setting col">
+        <div class="label">Бренд</div>
+        <div class="pair">
+          <input id="s-brand-name" type="text" placeholder="Название" autocomplete="off">
+          <input id="s-brand-handle" type="text" placeholder="@ник" autocomplete="off">
+        </div>
+        <div class="pair">
+          <label class="color"><input type="color" id="s-brand-primary"><span><i>Основной</i><code id="s-brand-primary-hex">#000000</code></span></label>
+          <label class="color"><input type="color" id="s-brand-accent"><span><i>Акцент</i><code id="s-brand-accent-hex">#000000</code></span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="card-platforms">
+      <div class="card-title">Площадки</div>
+      <div class="row-setting col">
+        <div class="label">Telegram-канал</div>
+        <input id="s-ch-telegram" type="text" placeholder="@канал" autocomplete="off" autocapitalize="off">
+      </div>
+      <div class="row-setting col">
+        <div class="label">VK <span class="hint">— id сообщества</span></div>
+        <input id="s-ch-vk" type="text" inputmode="numeric" placeholder="-123456" autocomplete="off">
+      </div>
+      <div class="row-setting col">
+        <div id="s-plat" class="rows"></div>
+        <p class="hint">ключи — в Подключениях ниже</p>
+      </div>
+    </div>
+
+    <div class="card" id="card-integ">
+      <div class="card-title">Подключения</div>
+      <p class="hint" id="s-integ-hint">Ключи проверяются живым запросом и начинают работать сразу, без перезапуска</p>
+      <div id="s-integ"></div>
     </div>
 
     <div class="card">
@@ -142,9 +237,10 @@
   </section>
 
   <nav class="tabbar">
-    <button data-screen="today" class="on"><span class="ic">◉</span>Сегодня</button>
-    <button data-screen="leads"><span class="ic">☰</span>Лиды</button>
-    <button data-screen="stats"><span class="ic">◔</span>Отчёт</button>
+    <button data-screen="today" class="on"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg></span>Сегодня</button>
+    <button data-screen="leads"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></svg></span>Лиды</button>
+    <button data-screen="stats"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V11M12 20V4M19 20v-6"/></svg></span>Отчёт</button>
+    <button data-screen="content"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6M9 13h6M9 17h3"/></svg></span>Контент</button>
   </nav>
 
   <!-- Шторка лида -->

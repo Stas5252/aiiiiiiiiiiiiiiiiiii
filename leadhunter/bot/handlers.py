@@ -15,7 +15,7 @@ from .guard import Guard
 from .notify import STATUS_LABELS
 from .workspace import TOPICS, Workspace
 
-HELP = """Я ищу лидов на сайты, ботов, ИИ-автоматизацию и ИИ-мультики и присылаю их сюда.
+HELP = """Я ищу лидов и делаю контент под вашу нишу. /niche — выбрать нишу одной командой, /app — кабинет.
 
 <b>Рабочая группа</b>
 /setup_group — выполнить в группе-форуме: бот создаст темы (Горячие, Сайты, Боты…) и будет слать лидов туда
@@ -31,13 +31,16 @@ HELP = """Я ищу лидов на сайты, ботов, ИИ-автомат�
 /rules — правила вида <code>+сайт +(нужен|ищу) -предлагаю</code> (словоформы учитываются)
 /rule_add выражение · /rule_del id
 /geo Москва, Тула — только эти города (пусто = везде) · /geo off
-/threshold N · /profile [текст] · /phrases · /phrases_set а; б · /phrases_gen
+/threshold N · /fresh часы откликов — какие заказы с бирж ещё реально забрать · /profile [текст] · /phrases · /phrases_set а; б · /phrases_gen
 /block @user · /unblock ключ · /ignored · /pause · /resume
 /template_set сайт текст — шаблон ответа по услуге, когда нет ИИ · /templates
 
 <b>Telegram-чаты</b> (если подключён аккаунт)
 /tg_find запрос · /tg_join @chat · /tg_chats · /chats_rating — какие чаты приносят лидов
 /discover ниша — найти и оценить чаты по нише (ИИ смотрит последние сообщения)
+
+<b>Контент-фабрика</b> — /content
+/post, /carousel, /reel, /magnet тема · /ideas · /plan · /queue · /channels · /voice · /brand · /autopilot on
 
 /sources — состояние источников"""
 
@@ -62,6 +65,32 @@ class BotDeps:
         return next((s for s in self.sources if isinstance(s, TelegramChatsSource)), None)
 
 
+async def onboarding_text(deps: "BotDeps", first: bool) -> str:
+    """/start: что уже работает и какие 3 шага остались — вместо простыни команд (она в /help)."""
+    integ = deps.extra.get("integrations")
+    sm = integ.summary() if integ else {}
+    niche = await deps.db.get_setting("niche")
+    ws = await deps.db.get_setting("workspace_chat_id")
+    hello = "Привет! Я ищу вам клиентов и делаю контент." if first else "Я ищу лидов и делаю контент под вашу нишу."
+    steps = [
+        f"{'✅' if niche else '1️⃣'} Ниша — /niche" + ("" if niche else " (одна команда настраивает всё под вашу сферу)"),
+        f"{'✅' if sm.get('ai') else '2️⃣'} Ключ ИИ — /setup" + ("" if sm.get("ai") else " (бесплатный Gemini: 2 минуты)"),
+        f"{'✅' if sm.get('miniapp') else '3️⃣'} Кабинет — /app" + ("" if sm.get("miniapp") else " (Mini App с лидами, отчётами и контентом)"),
+        f"{'✅' if ws else '▫️'} Группа для команды — /setup_group (необязательно)",
+    ]
+    return (f"{hello} Лиды приходят сюда с кнопками «Беру / Горячий / Не лид», контент — по командам /post, /toon, /ideas.\n\n"
+            + "\n".join(steps) + "\n\n/status — что работает · /help — все команды · /fresh — какие заказы с бирж присылать")
+
+
+def onboarding_keyboard(deps: "BotDeps"):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    row = [InlineKeyboardButton(text="🧭 Ниша", callback_data="ob:niche"), InlineKeyboardButton(text="🔌 Подключения", callback_data="ob:setup")]
+    url = deps.extra.get("miniapp_url")
+    if url:
+        row.append(InlineKeyboardButton(text="📱 Кабинет", web_app=WebAppInfo(url=url)))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
 def build_router(deps: BotDeps) -> Router:
     router = Router()
     db, guard, tg = deps.db, deps.guard, deps.tg
@@ -78,7 +107,7 @@ def build_router(deps: BotDeps) -> Router:
             first_owner = True
         if not await allowed(m):
             return
-        await m.answer(HELP)
+        await m.answer(await onboarding_text(deps, first_owner), reply_markup=onboarding_keyboard(deps))
         # Лиды, собранные до появления владельца, досылаем — иначе они молча лежат в базе
         undelivered = await db.undelivered_leads(20)
         if undelivered and (first_owner or deps.extra.get("redeliver")):
@@ -90,6 +119,66 @@ def build_router(deps: BotDeps) -> Router:
     async def help_cmd(m: Message):
         if await allowed(m):
             await m.answer(HELP)
+
+    @router.message(Command("niche"))
+    async def niche(m: Message, command: CommandObject):
+        if not await allowed(m):
+            return
+        from ..niches import NICHES, apply, describe
+        key = (command.args or "").strip().lower()
+        if not key:
+            cur = await db.get_setting("niche", "web")
+            lines = [f"{'▶️' if k == cur else '▫️'} <code>/niche {k}</code> — {n.title}" for k, n in NICHES.items()]
+            await m.answer("<b>Ниши</b> — одна команда меняет профиль для ИИ, фразы поиска, словарь и рубрики контента:\n"
+                           + "\n".join(lines) + "\n\nСвоя ниша: /profile текст + /phrases_set + /kw_add")
+            return
+        if key not in NICHES:
+            await m.answer("Нет такой ниши. Список: /niche")
+            return
+        n = NICHES[key]
+        await apply(db, deps.phrases, n)
+        for src in deps.sources:  # Яндекс.Карты: кого искать без сайта
+            if n.yandex_queries and hasattr(src, "queries") and getattr(src, "name", "") == "yandex_maps":
+                src.queries = n.yandex_queries
+        await m.answer("Переключил нишу:\n" + describe(n) + "\n\nИсточники подхватят фразы на следующем проходе. "
+                       "Проверьте /profile, при желании уточните его под себя.")
+
+    @router.message(Command("fresh"))
+    async def fresh(m: Message, command: CommandObject):
+        if not await allowed(m):
+            return
+        from ..freshness import Freshness
+        cur = Freshness.from_settings({"board_max_age_hours": await db.get_setting("board_max_age_hours"),
+                                       "max_competitors": await db.get_setting("max_competitors")})
+        args = (command.args or "").split()
+        if len(args) == 2:
+            try:
+                hours, comp = float(args[0].replace(",", ".")), int(args[1])
+            except ValueError:
+                await m.answer("Формат: /fresh часы откликов — например /fresh 2 10")
+                return
+            await db.set_setting("board_max_age_hours", str(hours))
+            await db.set_setting("max_competitors", str(comp))
+            await m.answer(f"Биржи: беру заказы моложе {hours:g} ч и не больше {comp} откликов. Остальное не присылаю.")
+            return
+        await m.answer(f"<b>Свежесть заказов с бирж</b> (Kwork, Weblancer, Freelance.ru, FL, hh)\n"
+                       f"Присылаю только моложе <b>{cur.board_max_age_hours:g} ч</b> и с не больше <b>{cur.max_competitors}</b> откликами. "
+                       f"Моложе {cur.hot_age_minutes:g} мин и до {cur.hot_competitors} откликов — +2 к баллу.\n\n"
+                       f"Изменить: /fresh 2 10 (часы, откликов). Чаты, карты и аудит это не трогает.")
+
+    @router.message(Command("app"))
+    async def app_cmd(m: Message):
+        if not await allowed(m):
+            return
+        url = deps.extra.get("miniapp_url")
+        if not url:
+            await m.answer("Mini App не включён: боту нужен публичный HTTPS-адрес.\n"
+                           "Быстро и бесплатно: <code>MINIAPP_TUNNEL=cloudflare</code> в .env — бот сам поднимет туннель и поставит "
+                           "кнопку «Кабинет» в меню. Или свой домен: <code>MINIAPP_URL=https://ваш-домен/app</code>.")
+            return
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📱 Открыть кабинет", web_app=WebAppInfo(url=url))]])
+        await m.answer("Кабинет: лиды, отчёт, контент и настройки. Кнопка «Кабинет» есть и в меню рядом с полем ввода.", reply_markup=kb)
 
     # --- рабочая группа и команда ---
     @router.message(Command("setup_group"))
@@ -117,6 +206,8 @@ def build_router(deps: BotDeps) -> Router:
             by_user.setdefault(r["user_name"], {})[r["status"]] = r["n"]
         lines = ["<b>Команда</b> (нажмите любую кнопку в группе, чтобы попасть в неё):"]
         names = {mem["name"]: mem["user_id"] for mem in members}
+        if await guard.is_owner(m.from_user.id) and m.from_user.id not in names.values():
+            names.setdefault(Guard.name(m.from_user) + " (владелец)", m.from_user.id)  # владелец виден, даже если ещё ничего не нажимал
         for name in by_user:  # владелец и те, кто действовал, но не в таблице команды
             names.setdefault(name, None)
         for name, uid in names.items():

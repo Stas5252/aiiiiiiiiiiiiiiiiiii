@@ -8,6 +8,7 @@ from .db import Database
 from .dedup import NearDuplicateIndex
 from .extract import extract_budget, extract_contacts
 from .filters import evaluate
+from .freshness import Freshness, check as freshness_check
 from .geo import geo_allows
 from .llm import LLMClassifier
 from .models import Lead
@@ -27,6 +28,7 @@ class Enriched:
     draft: str = ""
     rule: str = ""
     author_bio: str = ""
+    freshness: str = ""  # «12 мин назад · 2 откл.» для бирж
 
 
 class Notifier(Protocol):
@@ -73,7 +75,8 @@ class Pipeline:
             return True
         return False
 
-    async def handle(self, lead: Lead) -> bool:
+    async def handle(self, lead: Lead, *, quiet: bool = False) -> bool:
+        """quiet — сохранить без уведомления (лимит пачки у источника)."""
         if not await self.db.mark_seen(lead.source, lead.external_id):
             return False
         if len(lead.full_text) < 15:
@@ -92,19 +95,31 @@ class Pipeline:
         rule, blocked = evaluate(lead.full_text, [r["expr"] for r in await self.db.rules()])
         if blocked:
             return False
+        # Биржи: заказ старше N часов или с толпой откликов уже не забрать — не шлём
+        fresh = Freshness.from_settings({"board_max_age_hours": await self.db.get_setting("board_max_age_hours"),
+                                         "max_competitors": await self.db.get_setting("max_competitors")})
+        ok, bonus, mark = freshness_check(lead, fresh)
+        if not ok:
+            log.debug("%s/%s пропущен: %s", lead.source, lead.external_id, mark)
+            return False
         if not lead.contact:
             lead.contact = extract_contacts(lead.text)
 
         info = await self._enrich(lead, rule)
-        if info is None or info.score < await self.threshold():
+        if info is None:
+            return False
+        info.freshness = mark
+        if bonus and lead.preset_score is None:
+            info.score = min(10, info.score + bonus)
+        if info.score < await self.threshold():
             return False
         if self.near_dups.is_duplicate(lead.full_text):
             return False
 
         lead_id = await self.db.save_lead(lead, info.score, info.res, summary=info.summary, service=info.service,
                                           budget=info.budget, urgency=info.urgency, draft=info.draft,
-                                          rule=info.rule, author_bio=info.author_bio)
-        if await self.db.get_setting("paused") != "1":
+                                          rule=info.rule, author_bio=info.author_bio, freshness=info.freshness)
+        if not quiet and await self.db.get_setting("paused") != "1":
             await self.notifier.notify(lead_id, lead, info)
         return True
 

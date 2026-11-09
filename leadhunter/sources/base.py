@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from ..http import CaptchaError, NeedLoginError, in_work_hours
 from ..models import Lead
 
-Emit = Callable[[Lead], Awaitable[bool]]
+Emit = Callable[..., Awaitable[bool]]
 Alert = Callable[[str], Awaitable[None]]
 log = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class Source:
     last_ok: float | None = None
     last_error: str | None = None
     found_total: int = 0
+    burst_limit: int = 5  # максимум уведомлений за один проход источника
 
     async def poll(self) -> list[Lead]:
         raise NotImplementedError
@@ -45,9 +46,12 @@ class Source:
                 continue
             try:
                 leads = await self.poll()
+                # Первый проход после запуска: страница биржи — это десятки старых заказов. Шлём не больше
+                # burst_limit самых свежих, остальные уходят в базу молча (есть в /leads и кабинете).
+                leads.sort(key=lambda l: l.found_at, reverse=True)
                 found = 0
                 for lead in leads:
-                    if await emit(lead):
+                    if await emit(lead, quiet=found >= self.burst_limit):
                         found += 1
                 self.found_total += found
                 self.last_ok, self.last_error, failures = time.time(), None, 0

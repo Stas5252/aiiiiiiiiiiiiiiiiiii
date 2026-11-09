@@ -4,7 +4,12 @@ const initData = tg?.initData || new URLSearchParams(location.search).get("initD
 const inTelegram = Boolean(tg?.initData);
 if (tg) {
   tg.ready(); tg.expand();
-  try { tg.disableVerticalSwipes?.(); tg.setHeaderColor?.("secondary_bg_color"); tg.setBackgroundColor?.("secondary_bg_color"); } catch (_) {}
+  // Строго ч/б: тему задаёт colorScheme Telegram, а не цвета темы
+  const applyTheme = () => { const c = tg.colorScheme === "dark" ? "dark" : "light", hex = c === "dark" ? "#000000" : "#ffffff";
+    document.documentElement.dataset.theme = c;
+    try { tg.setHeaderColor?.(hex); tg.setBackgroundColor?.(hex); tg.setBottomBarColor?.(hex); } catch (_) {} };
+  try { tg.disableVerticalSwipes?.(); } catch (_) {}
+  if (inTelegram) { applyTheme(); tg.onEvent?.("themeChanged", applyTheme); }
 }
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -24,12 +29,12 @@ async function api(path, opts = {}) {
   return r.json();
 }
 let toastTimer;
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hidden"), 2000); }
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hidden"), Math.max(2000, msg.length * 70)); }
 const haptic = { tap: () => tg?.HapticFeedback?.impactOccurred("light"), ok: () => tg?.HapticFeedback?.notificationOccurred("success"), err: () => tg?.HapticFeedback?.notificationOccurred("error"), sel: () => tg?.HapticFeedback?.selectionChanged() };
 
 /* ---------- навигация ---------- */
 let me = null;
-const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, settings: loadSettings };
+const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, content: loadContent, settings: loadSettings };
 let current = "today";
 function show(name) {
   current = name;
@@ -38,7 +43,7 @@ function show(name) {
   $(".tabbar").classList.toggle("hidden", name === "settings");
   if (name === "settings") tg?.BackButton?.show(); else tg?.BackButton?.hide();
   window.scrollTo(0, 0);
-  screens[name]?.();
+  return screens[name]?.();
 }
 $$(".tabbar button").forEach((b) => b.onclick = () => { haptic.sel(); show(b.dataset.screen); });
 $("#open-settings").onclick = () => show("settings");
@@ -120,8 +125,26 @@ async function loadToday() {
     $("#today-mine-count").textContent = my.length || "";
     $("#today-mine").innerHTML = my.map((l) => leadRow(l, { mineLabel: true })).join("") || `<div class="empty">Свайпните лид вправо, чтобы взять</div>`;
     bindRows($("#today-new")); bindRows($("#today-mine"));
+    loadSetupBanner();
   } catch (e) { $("#today-new").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
+
+/* онбординг: чего не хватает до полной работы (скрывается на сессию) */
+const setupHidden = () => { try { return sessionStorage.getItem("setup-hidden") === "1"; } catch (_) { return false; } };
+let setupTarget = "#card-niche";
+async function loadSetupBanner() {
+  const box = $("#today-setup");
+  if (setupHidden()) return box.classList.add("hidden");
+  try {
+    const s = await api("/api/settings");
+    const needNiche = !s.niche, needAi = !s.summary?.ai && Boolean(me?.is_owner);
+    box.classList.toggle("hidden", !(needNiche || needAi));
+    $("#today-setup-list").textContent = `${needNiche ? "○" : "●"} ниша` + (me?.is_owner ? ` · ${needAi ? "○" : "●"} ключ ИИ` : "");
+    setupTarget = needNiche ? "#card-niche" : "#card-integ";
+  } catch (_) { box.classList.add("hidden"); }
+}
+$("#today-setup-x").onclick = () => { try { sessionStorage.setItem("setup-hidden", "1"); } catch (_) {} $("#today-setup").classList.add("hidden"); };
+$("#today-setup-go").onclick = async () => { await show("settings"); $(setupTarget)?.scrollIntoView({ block: "start" }); };
 
 /* ---------- Лиды ---------- */
 const flt = { status: "open", service: "", q: "", offset: 0 };
@@ -238,10 +261,62 @@ async function loadStats() {
   } catch (e) { toast(e.message); }
 }
 
+/* ---------- Контент-фабрика ---------- */
+const C = { status: "" };
+const KIND = { post: "Пост", carousel: "Карусель", reel: "Видео", magnet: "Лид-магнит" };
+const CSTATUS = { draft: "черновик", scheduled: "в плане", published: "вышло", rejected: "удалено" };
+$$("#c-seg button").forEach((b) => b.onclick = () => { $$("#c-seg button").forEach((x) => x.classList.toggle("on", x === b)); C.status = b.dataset.cstatus; haptic.sel(); loadContent(); });
+$("#c-make").onclick = async () => {
+  const topic = $("#c-topic").value.trim(); if (!topic) return toast("Напишите тему");
+  $("#c-make").disabled = true; toast("Пишу…");
+  try { await api("/api/content", { method: "POST", body: JSON.stringify({ kind: $("#c-kind").value, topic }) }); $("#c-topic").value = ""; haptic.ok(); loadContent(); }
+  catch (e) { haptic.err(); toast(e.message); } finally { $("#c-make").disabled = false; }
+};
+async function cact(id, body) { try { const r = await api("/api/content/" + id, { method: "POST", body: JSON.stringify(body) }); haptic.ok(); if (r.errors?.length) toast(r.errors.join("; ")); else if (r.results) toast("Опубликовано"); loadContent(); } catch (e) { haptic.err(); toast(e.message); } }
+function contentRow(it) {
+  const when = it.scheduled_at && it.status === "scheduled" ? " · " + new Date(it.scheduled_at).toLocaleString("ru", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+  const links = (it.published || []).map((p) => p.url ? `<a href="${esc(p.url)}" target="_blank">${esc(p.platform)}</a>` : esc(p.platform)).join(" ");
+  const cover = it.images?.[0] ? `<img src="${esc(it.images[0])}" alt="">` : it.video ? `<span class="score">▶</span>` : `<span class="score">${KIND[it.kind]?.[0] || "?"}</span>`;
+  const act = it.status === "published" ? "" : `<div class="c-actions">
+      <button data-a="publish">${it.status === "scheduled" ? "Сейчас" : "Опубликовать"}</button>
+      ${it.status === "scheduled" ? `<button data-a="draft">Снять</button>` : `<button data-a="pick">Когда</button>`}
+      <button data-a="reject" class="danger">Удалить</button>
+      <input type="datetime-local" class="hidden c-when"></div>`;
+  return `<div class="lead c-item" data-id="${it.id}"><div class="inner">${cover}<div class="body">
+    <div class="title">${esc(it.title || it.topic)}</div>
+    <div class="sub">${esc((it.text || "").replace(/<[^>]+>/g, "").slice(0, 160))}</div>
+    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${CSTATUS[it.status] || it.status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${esc(it.slug)}" target="_blank">страница</a></span>` : ""}</div>
+    ${act}</div></div></div>`;
+}
+async function loadContent() {
+  try {
+    const [{ items }, ch] = await Promise.all([api("/api/content?" + new URLSearchParams({ status: C.status })), api("/api/content/channels").catch(() => ({ channels: [] }))]);
+    $("#c-channels").textContent = ch.channels.length ? "→ " + ch.channels.map((c) => c.label).join(", ") : "площадки: /channels в боте";
+    const list = $("#content-list");
+    list.innerHTML = items.map(contentRow).join("") || `<div class="empty">Пока пусто — напишите тему выше или /post в боте</div>`;
+    $$(".c-item", list).forEach((el) => {
+      const id = el.dataset.id;
+      $$("[data-a]", el).forEach((b) => b.onclick = (ev) => {
+        ev.stopPropagation(); haptic.tap();
+        const a = b.dataset.a;
+        if (a === "pick") { const w = $(".c-when", el); w.classList.toggle("hidden"); w.onchange = () => cact(id, { action: "schedule", at: w.value }); return; }
+        if (a === "reject" && !confirm("Удалить?")) return;
+        cact(id, { action: a });
+      });
+      $(".title", el).onclick = () => { const t = $(".sub", el); t.classList.toggle("full"); };
+    });
+  } catch (e) { $("#content-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
 /* ---------- Настройки ---------- */
 let S = null, saveT;
-function autosave(patch) { clearTimeout(saveT); saveT = setTimeout(async () => { try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(patch) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500); }
-$$(".stepper button").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
+let pendingPatch = {};
+function autosave(patch) {
+  for (const [k, v] of Object.entries(patch)) pendingPatch[k] = (v && typeof v === "object" && !Array.isArray(v)) ? { ...pendingPatch[k], ...v } : v;
+  clearTimeout(saveT);
+  saveT = setTimeout(async () => { const body = pendingPatch; pendingPatch = {}; try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(body) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500);
+}
+$$(".stepper button[data-step]").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
 $("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
 $("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
 $("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
@@ -266,9 +341,113 @@ function renderSettings(s) {
   ig.replaceChildren(...Object.entries(s.ignored.chat).map(([k, v]) => tag("💬 " + (v || k), async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })),
     ...Object.keys(s.ignored.author).map((k) => tag("👤 " + k, async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })));
   if (!ig.children.length) ig.innerHTML = `<span class="hint">пусто</span>`;
-  $("#s-team").innerHTML = s.team.map((m) => `<div class="row"><span>${esc(m.name)}</span><span class="n">${m.user_id}</span></div>`).join("") || `<div class="empty">пока только вы</div>`;
+  $("#s-team").innerHTML = s.team.map((m) => `<div class="row"><span>${esc(m.name)}</span><span class="n">${m.user_id}<button class="x" data-rm="${m.user_id}" aria-label="убрать из команды">×</button></span></div>`).join("") || `<div class="empty">пока только вы</div>`;
+  $$("[data-rm]", $("#s-team")).forEach((b) => b.onclick = async () => {
+    if (!(await confirmAsk("Убрать из команды?"))) return;
+    try { renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ team_remove: +b.dataset.rm }) })); haptic.ok(); toast("Убрано"); } catch (e) { haptic.err(); toast(e.message); }
+  });
+  renderExtra(s);
 }
-async function loadSettings() { try { renderSettings(await api("/api/settings")); } catch (e) { toast(e.message); } }
+const confirmAsk = (text) => new Promise((ok) => (inTelegram && tg.showConfirm) ? tg.showConfirm(text, ok) : ok(window.confirm(text)));
+async function loadSettings() {
+  try { if (!me) me = (await api("/api/me")).user; renderSettings(await api("/api/settings")); } catch (e) { toast(e.message); }
+}
+
+/* ниша, свежесть, контент, площадки, подключения */
+const setVal = (id, v) => { const el = $(id); if (el !== document.activeElement) el.value = v ?? ""; };
+const fmtH = (h) => String(+(+h).toFixed(1)).replace(".", ",");
+function renderFresh(f) {
+  $("#s-fh").textContent = fmtH(f.board_max_age_hours); $("#s-fc").textContent = f.max_competitors;
+  $("#s-fh-txt").textContent = `не старше ${fmtH(f.board_max_age_hours)} ч`; $("#s-fc-txt").textContent = `не больше ${f.max_competitors} откликов`;
+}
+function renderBrand(b) {
+  setVal("#s-brand-name", b.name); setVal("#s-brand-handle", b.handle);
+  for (const k of ["primary", "accent"]) { const c = /^#[0-9a-f]{6}$/i.test(b[k] || "") ? b[k] : "#000000"; $("#s-brand-" + k).value = c; $("#s-brand-" + k + "-hex").textContent = c; }
+}
+function renderExtra(s) {
+  const sel = $("#s-niche");
+  sel.innerHTML = s.niches.map((n) => `<option value="${esc(n.key)}">${esc(n.title)}</option>`).join("") + `<option value="">Своя</option>`;
+  sel.value = s.niches.some((n) => n.key === s.niche) ? s.niche : "";
+  renderFresh(s.fresh);
+  setVal("#s-voice", s.voice); setVal("#s-pillars", s.pillars); $("#s-autopilot").checked = s.autopilot;
+  renderBrand(s.brand);
+  setVal("#s-ch-telegram", s.channels?.telegram); setVal("#s-ch-vk", s.channels?.vk);
+  renderPlatforms(s); renderIntegrations(s);
+}
+$("#s-niche").onchange = async (e) => {
+  if (!e.target.value) return toast("Для своей ниши задайте профиль и фразы вручную");
+  try { renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ niche: e.target.value }) })); haptic.ok(); toast("Ниша применена"); } catch (err) { haptic.err(); toast(err.message); loadSettings(); }
+};
+$$("[data-fstep]").forEach((b) => b.onclick = () => {
+  if (!S) return;
+  const f = { ...S.fresh }, step = +b.dataset.fstep;
+  if (b.dataset.f === "h") f.board_max_age_hours = Math.round(Math.max(0.5, Math.min(24, f.board_max_age_hours + step)) * 2) / 2;
+  else f.max_competitors = Math.max(0, Math.min(100, f.max_competitors + step));
+  S.fresh = f; renderFresh(f); haptic.sel(); autosave({ fresh: f });
+});
+$("#s-voice").onchange = (e) => autosave({ voice: e.target.value });
+$("#s-pillars").onchange = (e) => autosave({ pillars: e.target.value });
+$("#s-autopilot").onchange = (e) => autosave({ autopilot: e.target.checked });
+const saveBrand = () => {
+  const b = { name: $("#s-brand-name").value, handle: $("#s-brand-handle").value, primary: $("#s-brand-primary").value, accent: $("#s-brand-accent").value };
+  for (const k of ["primary", "accent"]) $("#s-brand-" + k + "-hex").textContent = b[k];
+  autosave({ brand: b });
+};
+["name", "handle", "primary", "accent"].forEach((k) => $("#s-brand-" + k).onchange = saveBrand);
+["primary", "accent"].forEach((k) => $("#s-brand-" + k).oninput = (e) => { $("#s-brand-" + k + "-hex").textContent = e.target.value; });
+$("#s-ch-telegram").onchange = (e) => { let v = e.target.value.trim(); if (v && !/^[@-]|^https?:/.test(v)) e.target.value = v = "@" + v; autosave({ channels: { telegram: v } }); };
+$("#s-ch-vk").onchange = (e) => autosave({ channels: { vk: e.target.value.trim() } });
+
+function renderPlatforms(s) {
+  const sm = s.summary || {}, row = (name, ok) => `<div class="row"><span>${name}</span><span class="n">${ok ? "● подключено" : "○ нет ключей"}</span></div>`;
+  $("#s-plat").innerHTML = row("Threads", sm.threads) + row("Instagram", sm.instagram) + row("YouTube", sm.youtube);
+}
+
+const GROUPS = [["ai", "🧠 ИИ"], ["publish", "📣 Площадки"], ["sources", "🔎 Поиск"]];
+const openInteg = new Set();
+function extLink(a) { a.target = "_blank"; a.rel = "noopener"; a.onclick = (ev) => { if (inTelegram && tg.openLink) { ev.preventDefault(); tg.openLink(a.href); } }; }
+function renderIntegrations(s) {
+  const box = $("#s-integ"), owner = Boolean(me?.is_owner), items = s.integrations || [];
+  $("#s-integ-hint").textContent = owner ? "Ключи проверяются живым запросом и начинают работать сразу, без перезапуска" : "Подключения настраивает владелец";
+  box.innerHTML = "";
+  if (!owner) return;
+  const byKey = Object.fromEntries(items.map((i) => [i.key, i]));
+  for (const [g, title] of GROUPS) {
+    const list = items.filter((i) => i.group === g);
+    if (!list.length) continue;
+    const h = document.createElement("div"); h.className = "integ-group"; h.textContent = title; box.appendChild(h);
+    for (const i of list) {
+      const missing = (i.requires || []).filter((k) => !byKey[k]?.set).map((k) => byKey[k]?.title || k);
+      const el = document.createElement("div"); el.className = "integ";
+      const canEdit = i.editable && !missing.length;
+      const note = !i.editable ? "задано на сервере" : missing.length ? `сначала: ${missing.join(", ")}` : "";
+      const [name, ...more] = i.title.split(" (");
+      const detail = [more.length ? more.join(" (").replace(/\)$/, "") : "", note || i.hint || ""].filter(Boolean).join(". ").replace(/\.\. /g, ". ");
+      el.innerHTML = `<div class="integ-head"><div class="integ-main">
+          <div class="label"><span class="st">${i.set ? "●" : "○"}</span>${esc(name)}</div>
+          <div class="hint">${i.set ? esc(i.masked) + " · " : ""}${esc(detail)}</div>
+          ${i.url ? `<div class="hint link"><a href="${esc(i.url)}">где взять ↗</a></div>` : ""}
+        </div><button class="btn-sm" ${canEdit ? "" : "disabled"}>${i.set ? "Заменить" : "Подключить"}</button></div>
+        <div class="integ-edit hidden"><div class="add-row"><input type="${i.secret ? "password" : "text"}" placeholder="${i.secret ? "вставьте ключ" : "значение"}" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn-sm solid">Сохранить</button></div>${i.set ? `<button class="kill">Убрать</button>` : ""}</div>`;
+      $$("a", el).forEach(extLink);
+      const edit = $(".integ-edit", el), input = $("input", el), open = $(".integ-head .btn-sm", el);
+      if (canEdit && openInteg.has(i.key)) edit.classList.remove("hidden");
+      open.onclick = () => { const hide = !edit.classList.contains("hidden"); edit.classList.toggle("hidden", hide); if (hide) openInteg.delete(i.key); else { openInteg.add(i.key); input.focus(); } };
+      const send = async (value, okText, btn) => {
+        const label = btn.textContent; btn.disabled = true; btn.textContent = "Проверяю…";
+        try {
+          const r = await api("/api/integrations", { method: "POST", body: JSON.stringify({ key: i.key, value }) });
+          S = { ...S, integrations: r.integrations, summary: r.summary }; openInteg.delete(i.key);
+          haptic.ok(); toast(okText); renderPlatforms(S); renderIntegrations(S);
+        } catch (e) { haptic.err(); toast(e.message); btn.disabled = false; btn.textContent = label; }
+      };
+      $(".solid", el).onclick = (ev) => { const v = input.value.trim(); if (!v) return toast("Вставьте значение"); send(v, "Подключено", ev.currentTarget); };
+      input.onkeydown = (ev) => { if (ev.key === "Enter") $(".solid", el).click(); };
+      const kill = $(".kill", el); if (kill) kill.onclick = (ev) => send("", "Убрано", ev.currentTarget);
+      box.appendChild(el);
+    }
+  }
+}
 $$("[data-add]").forEach((b) => b.onclick = async () => {
   try {
     if (b.dataset.add === "phrase") { const v = $("#s-phrase-new").value.trim(); if (!v) return; $("#s-phrase-new").value = ""; renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: [...S.phrases, v] }) })); }

@@ -42,6 +42,7 @@ def parse_kwork_html(body: str) -> list[Lead]:
             contact=w.get("wantUserGetProfileUrl") or "",
             found_at=found,
             intent_implied=True,
+            competitors=int(w["kwork_count"]) if str(w.get("kwork_count", "")).isdigit() else None,
         ))
     return leads
 

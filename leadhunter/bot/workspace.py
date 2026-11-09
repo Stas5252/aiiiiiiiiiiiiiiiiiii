@@ -25,6 +25,7 @@ TOPICS: dict[str, tuple[str, int]] = {
     "audit": ("🩺 Аудит сайтов", 0xFB6F5F),
     "boards": ("📋 Биржи", 0xFFD67E),
     "reports": ("📊 Отчёты", 0x8EEE98),
+    "content": ("✍️ Контент", 0xCB86DB),
     "health": ("⚠️ Здоровье", 0xFF93B2),
 }
 BOARD_SOURCES = {"kwork", "weblancer", "freelance.ru", "hh.ru"}
