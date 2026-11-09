@@ -140,7 +140,7 @@ async def test_start_makes_owner_and_redelivers_backlog(env):
     await seed(env)  # владельца ещё нет — лиды легли в базу без доставки
     assert len(await env.db.undelivered_leads()) == 3
     texts = await env.cmd("/start")
-    assert "Я ищу лидов" in texts[0] and "нашёл 3 лидов" in texts[1]
+    assert "ищу вам клиентов" in texts[0] and "нашёл 3 лидов" in texts[1]
     assert sum("Открыть источник" in t or "#" in t for t in texts[2:]) == 3
     assert await env.db.get_setting("owner_ids") == str(OWNER)
     assert await env.db.undelivered_leads() == []

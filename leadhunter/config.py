@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     # Биржи без логина
     kwork_enabled: bool = True
-    kwork_categories: StrList = Field(default_factory=lambda: ["11", "all"])  # 11 = Разработка и IT, all = все
+    kwork_categories: StrList = Field(default_factory=lambda: ["11"])  # 11 = Разработка и IT; "all" = все категории (много мусора)
     kwork_pages: int = 3
     kwork_interval: int = 600
     weblancer_enabled: bool = True

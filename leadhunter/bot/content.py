@@ -22,13 +22,13 @@ log = logging.getLogger(__name__)
 CONTENT_HELP = """<b>Контент-фабрика</b> — ИИ пишет под ваш профиль и учится на ваших правках.
 
 /post тема · /carousel тема · /reel тема · /magnet тема — сделать пост / карусель / короткое видео / лид-магнит
-/toon тема — мультик с персонажами, рендерится кодом (без нейросети) · /aivideo тема — ИИ-мультик нейросетью Gemini (нужен GEMINI_API_KEY, платно ≈ 0,07 $/сек)
+/toon тема — мультик с персонажами, рендерится кодом (без нейросети) · /aivideo тема — ИИ-мультик нейросетью Gemini (платно ≈ 0,07 $/сек, биллинг в AI Studio)
 /ideas [N] — идеи из реальных запросов клиентов · /plan — план на неделю (с автопилотом сам предложит черновики)
 /publish текст — опубликовать свой текст (обложка подставится)
 /queue — очередь · /schedule id 2025-01-15 10:00 — точное время · /content — статистика
 
 <b>Куда публиковать</b>: /channels · /channel_set telegram @канал · /channel_set vk -123456 · /channel_del vk
-Threads / Instagram / YouTube — токены в .env. TikTok и остальное — кнопка «📦 Пакет»: видео + подпись, выкладываете за минуту.
+Threads / Instagram / YouTube — ключи через /setup. TikTok и остальное — кнопка «📦 Пакет»: видео + подпись, выкладываете за минуту.
 
 <b>Стиль</b>: /voice как писать (тон голоса) · /brand Студия | @handle | #141420 | #7C5CFF — подпись и цвета слайдов
 /autopilot on|off — каждый день в заданный час бот сам приносит черновик по плану"""
@@ -357,7 +357,8 @@ def build_content_router(deps) -> Router:
         lines.append(f"• заявок с лендингов: {st['landing_leads']}")
         pubs = deps.extra.get("publishers")
         if pubs:
-            lines.append("\n<b>Публикую в</b>: " + ", ".join(html.escape(p.label) for p in await pubs()) or "никуда — /channels")
+            labels = ", ".join(html.escape(p.label) for p in await pubs())
+            lines.append("\n<b>Публикую в</b>: " + (labels or "никуда — настройте /channels"))
         await m.answer("\n".join(lines))
 
     # --- каналы, стиль, автопилот ---
@@ -371,11 +372,11 @@ def build_content_router(deps) -> Router:
             lines.append(f"✅ {html.escape(p.label)}")
         for key, name in API_PLATFORMS.items():
             if not any(p.platform == key for p in pubs):
-                hint = {"telegram": "/channel_set telegram @канал (бот — админ канала)",
-                        "vk": "VK_TOKEN в .env + /channel_set vk -id_группы",
-                        "threads": "THREADS_ACCESS_TOKEN + THREADS_USER_ID в .env",
-                        "instagram": "IG_ACCESS_TOKEN + IG_USER_ID в .env (+ MINIAPP_URL для картинок)",
-                        "youtube": "YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN в .env"}[key]
+                hint = {"telegram": "добавьте бота админом канала → /channel_set telegram @канал",
+                        "vk": "токен VK в /setup → /channel_set vk -id_группы",
+                        "threads": "токен и ID в /setup",
+                        "instagram": "токен и ID в /setup (картинки — через кабинет, нужен /app)",
+                        "youtube": "Client ID, secret и refresh token в /setup"}[key]
                 lines.append(f"▫️ {name}: {hint}")
         lines.append("\n" + ", ".join(MANUAL_PLATFORMS.values()) + " — через «📦 Пакет» (у TikTok API только по одобрению приложения)")
         await m.answer("\n".join(lines))
