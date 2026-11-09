@@ -116,7 +116,7 @@ class GeminiMedia:
             return None
         data = await self._interact(
             self.image_model, [{"type": "text", "text": prompt[:3000]}],
-            {"type": "image", "mime_type": "image/png", "aspect_ratio": aspect, "image_size": "1K"})
+            {"type": "image", "mime_type": "image/jpeg", "aspect_ratio": aspect, "image_size": "1K"})
         imgs = _parts(data, "image")
         if not imgs or not imgs[-1].get("data"):
             raise GeminiError(f"Gemini не вернул картинку: {_texts(data) or 'пустой ответ'}")
