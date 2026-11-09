@@ -33,6 +33,15 @@ class Verdict:
     reply_draft: str = ""
 
 
+def _strip_fence(s: str) -> str:
+    """Некоторые модели оборачивают JSON в ```json … ``` даже при response_format."""
+    s = s.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+        s = s.rsplit("```", 1)[0]
+    return s.strip()
+
+
 def build_examples(good: list[str], bad: list[str]) -> str:
     """Отметки владельца («горячий» / «не лид») становятся few-shot примерами — ИИ подстраивается под вкус."""
     parts = []
@@ -44,12 +53,13 @@ def build_examples(good: list[str], bad: list[str]) -> str:
 
 
 class LLMClassifier:
-    def __init__(self, api_key: str, base_url: str, model: str, max_per_hour: int = 300):
+    def __init__(self, api_key: str, base_url: str, model: str, max_per_hour: int = 300, fallback_model: str = ""):
         self.model = model
+        self.fallback_model = fallback_model  # на 429/503 основной модели повторяем запрос на ней
         self.max_per_hour = max_per_hour
         self._calls: deque[float] = deque()
         self.client = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers={"Authorization": f"Bearer {api_key}"}, timeout=60
+            base_url=base_url.rstrip("/"), headers={"Authorization": f"Bearer {api_key}"}, timeout=120
         )
 
     def _allowed(self) -> bool:
@@ -75,8 +85,13 @@ class LLMClassifier:
         if max_tokens:
             payload["max_tokens"] = max_tokens
         r = await self.client.post("/chat/completions", json=payload)
+        if r.status_code in (429, 500, 503) and self.fallback_model and self.fallback_model != self.model:
+            log.warning("LLM %s: HTTP %s, повторяю на %s", self.model, r.status_code, self.fallback_model)
+            payload["model"] = self.fallback_model
+            r = await self.client.post("/chat/completions", json=payload)
         r.raise_for_status()
-        return json.loads(r.json()["choices"][0]["message"]["content"])
+        content = r.json()["choices"][0]["message"]["content"]
+        return json.loads(_strip_fence(content))
 
     async def classify(self, text: str, profile: str, good: list[str] = (), bad: list[str] = ()) -> Verdict | None:
         system = SYSTEM.format(profile=profile, examples=build_examples(list(good), list(bad)))
