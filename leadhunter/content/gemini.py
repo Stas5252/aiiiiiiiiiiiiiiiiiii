@@ -18,7 +18,7 @@ DEFAULTS = {
     "image_model": "gemini-nano-banana-2.1",  # платный тариф; бюджетный вариант — gemini-3.1-flash-lite-image
     "video_model": "gemini-omni-1.2-flash",   # Veo 3.1 preview в Gemini API закрыт 22.10.2026; 3–15 с, 9:16, звук
     "tts_model": "gemini-3.8-flash-tts",      # есть бесплатный тариф
-    "llm_model": "gemini-3.8-flash",          # для LLMClassifier через OpenAI-совместимый эндпоинт
+    "llm_model": "gemini-3.5-flash-lite",     # для LLMClassifier: бесплатный лимит щедрее, чем у 3.8-flash, и без перегрузок
 }
 
 
