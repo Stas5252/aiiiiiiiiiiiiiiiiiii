@@ -4,13 +4,12 @@ from time import mktime
 from urllib.parse import urlparse
 
 import feedparser
-import httpx
 
 from ..config import Settings
+from ..http import Fetcher
 from ..models import Lead
 from .base import Source, strip_html
 
-UA = "Mozilla/5.0 (compatible; LeadHunter/0.1)"
 
 
 def parse_feed(raw: bytes, feed_url: str) -> list[Lead]:
@@ -40,16 +39,17 @@ def parse_feed(raw: bytes, feed_url: str) -> list[Lead]:
 
 class RSSBoardsSource(Source):
     name = "rss"
+    human = True
 
     def __init__(self, s: Settings):
         self.feeds = s.rss_feeds
         self.interval = s.rss_interval
+        self.fetcher = Fetcher(s.proxy_url, pause=(2, 5))
 
     async def poll(self) -> list[Lead]:
         leads: list[Lead] = []
-        async with httpx.AsyncClient(timeout=30, headers={"User-Agent": UA}, follow_redirects=True) as c:
-            for url in self.feeds:
-                r = await c.get(url)
-                r.raise_for_status()
-                leads += await asyncio.to_thread(parse_feed, r.content, url)
+        for url in self.feeds:
+            r = await self.fetcher.get(url)  # FL.ru режет обычные HTTP-клиенты, нужен TLS-отпечаток браузера
+            r.raise_for_status()
+            leads += await asyncio.to_thread(parse_feed, r.content, url)
         return leads
