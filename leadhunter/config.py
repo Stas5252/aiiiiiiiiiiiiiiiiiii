@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     # Mini App (кабинет внутри Telegram): публичный HTTPS-адрес, где доступен этот сервер
     miniapp_url: str | None = None
     miniapp_port: int = 8080
+    miniapp_tunnel: str = ""  # "cloudflare" — поднять бесплатный quick tunnel и не думать о домене
 
     # Telegram-аккаунт (Telethon) для чтения чатов. Бот сам в чужие чаты не попадёт.
     tg_api_id: int | None = None
