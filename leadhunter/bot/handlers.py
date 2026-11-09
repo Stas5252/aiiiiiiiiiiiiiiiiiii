@@ -65,6 +65,32 @@ class BotDeps:
         return next((s for s in self.sources if isinstance(s, TelegramChatsSource)), None)
 
 
+async def onboarding_text(deps: "BotDeps", first: bool) -> str:
+    """/start: что уже работает и какие 3 шага остались — вместо простыни команд (она в /help)."""
+    integ = deps.extra.get("integrations")
+    sm = integ.summary() if integ else {}
+    niche = await deps.db.get_setting("niche")
+    ws = await deps.db.get_setting("workspace_chat_id")
+    hello = "Привет! Я ищу вам клиентов и делаю контент." if first else "Я ищу лидов и делаю контент под вашу нишу."
+    steps = [
+        f"{'✅' if niche else '1️⃣'} Ниша — /niche" + ("" if niche else " (одна команда настраивает всё под вашу сферу)"),
+        f"{'✅' if sm.get('ai') else '2️⃣'} Ключ ИИ — /setup" + ("" if sm.get("ai") else " (бесплатный Gemini: 2 минуты)"),
+        f"{'✅' if sm.get('miniapp') else '3️⃣'} Кабинет — /app" + ("" if sm.get("miniapp") else " (Mini App с лидами, отчётами и контентом)"),
+        f"{'✅' if ws else '▫️'} Группа для команды — /setup_group (необязательно)",
+    ]
+    return (f"{hello} Лиды приходят сюда с кнопками «Беру / Горячий / Не лид», контент — по командам /post, /toon, /ideas.\n\n"
+            + "\n".join(steps) + "\n\n/status — что работает · /help — все команды · /fresh — какие заказы с бирж присылать")
+
+
+def onboarding_keyboard(deps: "BotDeps"):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    row = [InlineKeyboardButton(text="🧭 Ниша", callback_data="ob:niche"), InlineKeyboardButton(text="🔌 Подключения", callback_data="ob:setup")]
+    url = deps.extra.get("miniapp_url")
+    if url:
+        row.append(InlineKeyboardButton(text="📱 Кабинет", web_app=WebAppInfo(url=url)))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
 def build_router(deps: BotDeps) -> Router:
     router = Router()
     db, guard, tg = deps.db, deps.guard, deps.tg
@@ -81,7 +107,7 @@ def build_router(deps: BotDeps) -> Router:
             first_owner = True
         if not await allowed(m):
             return
-        await m.answer(HELP)
+        await m.answer(await onboarding_text(deps, first_owner), reply_markup=onboarding_keyboard(deps))
         # Лиды, собранные до появления владельца, досылаем — иначе они молча лежат в базе
         undelivered = await db.undelivered_leads(20)
         if undelivered and (first_owner or deps.extra.get("redeliver")):

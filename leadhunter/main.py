@@ -6,14 +6,16 @@ from aiogram.client.default import DefaultBotProperties
 
 from .bot.callbacks import build_callbacks
 from .bot.content import build_content_router
+from .bot.setup import build_onboarding_callbacks, build_setup_router
 from .bot.guard import Guard
 from .bot.handlers import BotDeps, build_router
 from .bot.notify import TelegramNotifier
 from .bot.workspace import Workspace
 from .config import Settings
-from .content.runtime import build_content, build_llm
+from .content.runtime import build_content, build_llm, reconfigure_ai
 from .content.scheduler import autopilot_loop, content_loop
 from .db import Database
+from .integrations import Integrations, load_overrides
 from .loops import digest_loop, followup_loop, sla_loop
 from .phrases import PhraseProvider, default_phrases
 from .pipeline import Pipeline
@@ -28,6 +30,9 @@ async def run() -> None:
     s = Settings()
     db = Database(s.db_path)
     await db.connect()
+    applied = await load_overrides(db, s)  # ключи, введённые через /setup или кабинет
+    if applied:
+        log.info("подключения из базы: %s", ", ".join(applied))
 
     bot = Bot(s.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
     tg_notifier = TelegramNotifier(bot, db, s.owner_ids, outreach_enabled=s.tg_outreach_limit > 0,
@@ -60,6 +65,8 @@ async def run() -> None:
     dp.include_router(build_router(deps))
     dp.include_router(build_callbacks(deps))
     dp.include_router(build_content_router(deps))
+    dp.include_router(build_setup_router(deps))
+    dp.include_router(build_onboarding_callbacks(deps))
     deps.extra["pipeline"] = pipeline
 
     tunnel = None
@@ -73,6 +80,12 @@ async def run() -> None:
             tunnel = None
     deps.extra["miniapp_url"] = s.miniapp_url
     factory = await build_content(s, db, bot, llm, deps, tg_notifier)
+
+    async def on_change():
+        reconfigure_ai(s, deps, factory, pipeline)
+
+    deps.extra["integrations"] = Integrations(db, s, on_change)
+    deps.extra["settings"] = s
 
     tasks = [asyncio.create_task(src.run(pipeline.handle), name=src.name) for src in sources]
     tasks.append(asyncio.create_task(sla_loop(db, tg_notifier, s.sla_minutes, s.sla_min_score), name="sla"))

@@ -371,11 +371,11 @@ def build_content_router(deps) -> Router:
             lines.append(f"✅ {html.escape(p.label)}")
         for key, name in API_PLATFORMS.items():
             if not any(p.platform == key for p in pubs):
-                hint = {"telegram": "/channel_set telegram @канал (бот — админ канала)",
-                        "vk": "VK_TOKEN в .env + /channel_set vk -id_группы",
-                        "threads": "THREADS_ACCESS_TOKEN + THREADS_USER_ID в .env",
-                        "instagram": "IG_ACCESS_TOKEN + IG_USER_ID в .env (+ MINIAPP_URL для картинок)",
-                        "youtube": "YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN в .env"}[key]
+                hint = {"telegram": "добавьте бота админом канала → /channel_set telegram @канал",
+                        "vk": "токен VK в /setup → /channel_set vk -id_группы",
+                        "threads": "токен и ID в /setup",
+                        "instagram": "токен и ID в /setup (картинки — через кабинет, нужен /app)",
+                        "youtube": "Client ID, secret и refresh token в /setup"}[key]
                 lines.append(f"▫️ {name}: {hint}")
         lines.append("\n" + ", ".join(MANUAL_PLATFORMS.values()) + " — через «📦 Пакет» (у TikTok API только по одобрению приложения)")
         await m.answer("\n".join(lines))
