@@ -1,0 +1,9 @@
+services:
+  leadhunter:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    # Для первой авторизации Telegram-аккаунта:
+    # docker compose run --rm -it leadhunter python -m leadhunter.tg_login
