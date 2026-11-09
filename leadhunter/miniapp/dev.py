@@ -23,8 +23,17 @@ async def main(user_id: int, port: int) -> None:
     guard = Guard(None, db, s.owner_ids or [user_id])
     deps = BotDeps(db, [], guard, PhraseProvider(db, default_phrases(s)), Workspace(None, db), None, s.profile)
     deps.extra["threshold"] = s.score_threshold
+    from ..integrations import Integrations, load_overrides
+    await load_overrides(db, s)
     llm = build_llm(s)
-    await build_content(s, db, None, llm, deps, None)  # вкладка «Контент» и лендинги; публикация без бота недоступна
+    factory = await build_content(s, db, None, llm, deps, None)
+
+    async def on_change():
+        from ..content.runtime import reconfigure_ai
+        reconfigure_ai(s, deps, factory)
+
+    deps.extra["integrations"] = Integrations(db, s, on_change)
+    deps.extra["settings"] = s  # вкладка «Контент» и лендинги; публикация без бота недоступна
     api = MiniAppAPI(db, s.bot_token, guard, deps, [], dev_user_id=user_id)
     runner = web.AppRunner(build_app(api))
     await runner.setup()
