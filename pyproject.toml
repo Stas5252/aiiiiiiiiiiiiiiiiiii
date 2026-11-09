@@ -11,6 +11,8 @@ dependencies = [
     "feedparser>=6.0",
     "pydantic-settings>=2.7",
     "ddgs>=9.0",
+    "curl_cffi>=0.10",
+    "patchright>=1.50",
 ]
 
 [project.optional-dependencies]

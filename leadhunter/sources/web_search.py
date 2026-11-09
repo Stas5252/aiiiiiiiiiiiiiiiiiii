@@ -5,6 +5,7 @@ import httpx
 
 from ..config import Settings
 from ..models import Lead
+from ..phrases import PhraseProvider
 from .base import Source
 
 log = logging.getLogger(__name__)
@@ -17,9 +18,9 @@ class WebSearchSource(Source):
 
     name = "web"
 
-    def __init__(self, s: Settings, sites: list[str] | None = None):
+    def __init__(self, s: Settings, phrases: PhraseProvider, sites: list[str] | None = None):
         self.sites = sites if sites is not None else s.web_search_sites
-        self.phrases = s.search_phrases
+        self.phrases = phrases
         self.interval = s.web_search_interval
         self.serper_key = s.serper_api_key
 
@@ -45,8 +46,9 @@ class WebSearchSource(Source):
 
     async def poll(self) -> list[Lead]:
         leads: list[Lead] = []
+        phrases = await self.phrases.get()
         for site in self.sites:
-            for phrase in self.phrases:
+            for phrase in phrases:
                 query = f'site:{site} "{phrase}"'
                 rows = await (self._serper(query) if self.serper_key else self._ddg(query))
                 for r in rows:

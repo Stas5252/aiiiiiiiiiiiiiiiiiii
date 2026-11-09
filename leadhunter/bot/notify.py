@@ -12,12 +12,13 @@ from ..pipeline import Enriched
 
 log = logging.getLogger(__name__)
 
-ICONS = {"telegram": "✈️", "threads": "🧵", "instagram": "📸", "yandex_maps": "🗺", "hh.ru": "💼", "vk": "🔵",
-         "rss": "📋", "web": "🌐"}
+ICONS = {"telegram": "✈️", "threads": "🧵", "instagram": "📸", "yandex_maps": "🗺", "site_audit": "🩺", "hh.ru": "💼",
+         "vk": "🔵", "rss": "📋", "web": "🌐", "kwork": "🟢", "weblancer": "🟣", "freelance.ru": "🟠"}
 URGENCY = {"высокая": "🔴", "средняя": "🟡", "низкая": "🟢"}
 
 
-def status_keyboard(lead_id: int, has_draft: bool = False, chat_key: str | None = None) -> InlineKeyboardMarkup:
+def status_keyboard(lead_id: int, has_draft: bool = False, chat_key: str | None = None,
+                    can_send: bool = False) -> InlineKeyboardMarkup:
     rows = [[
         InlineKeyboardButton(text="✅ Написал", callback_data=f"st:{lead_id}:contacted"),
         InlineKeyboardButton(text="🔥 Горячий", callback_data=f"st:{lead_id}:hot"),
@@ -25,7 +26,9 @@ def status_keyboard(lead_id: int, has_draft: bool = False, chat_key: str | None 
     ]]
     extra = []
     if has_draft:
-        extra.append(InlineKeyboardButton(text="✍️ Черновик ответа", callback_data=f"dr:{lead_id}"))
+        extra.append(InlineKeyboardButton(text="✍️ Черновик", callback_data=f"dr:{lead_id}"))
+    if can_send:
+        extra.append(InlineKeyboardButton(text="📨 Отправить с аккаунта", callback_data=f"send:{lead_id}"))
     if chat_key:
         extra.append(InlineKeyboardButton(text="🔇 Чат в игнор", callback_data=f"mute:{lead_id}"))
     if extra:
@@ -65,10 +68,11 @@ def format_lead(lead_id: int, lead: Lead, info: Enriched) -> str:
 
 
 class TelegramNotifier:
-    def __init__(self, bot: Bot, db: Database, owner_ids: list[int]):
+    def __init__(self, bot: Bot, db: Database, owner_ids: list[int], outreach_enabled: bool = False):
         self.bot = bot
         self.db = db
         self.static_owners = owner_ids
+        self.outreach_enabled = outreach_enabled
 
     async def owners(self) -> list[int]:
         stored = await self.db.get_setting("owner_ids", "")
@@ -87,5 +91,6 @@ class TelegramNotifier:
                     break
 
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None:
-        kb = status_keyboard(lead_id, has_draft=bool(info.draft), chat_key=lead.extra.get("chat_key"))
+        can_send = self.outreach_enabled and lead.source == "telegram" and bool(info.draft) and lead.contact.startswith(("@", "tg://"))
+        kb = status_keyboard(lead_id, has_draft=bool(info.draft), chat_key=lead.extra.get("chat_key"), can_send=can_send)
         await self.send(format_lead(lead_id, lead, info), reply_markup=kb)

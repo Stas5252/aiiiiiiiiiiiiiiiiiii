@@ -4,9 +4,11 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 
+from ..http import CaptchaError, NeedLoginError, in_work_hours
 from ..models import Lead
 
 Emit = Callable[[Lead], Awaitable[bool]]
+Alert = Callable[[str], Awaitable[None]]
 log = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -21,6 +23,11 @@ def strip_html(text: str) -> str:
 class Source:
     name: str = "base"
     interval: int = 600
+    # Источник ходит по сайтам «как человек»: только в рабочие часы, с паузами
+    human: bool = False
+    work_hours: str = "0-24"
+    tz: str = "Europe/Moscow"
+    alert: Alert | None = None
     # Состояние для /sources: когда последний раз получилось и что сломалось
     last_ok: float | None = None
     last_error: str | None = None
@@ -33,6 +40,9 @@ class Source:
         """По умолчанию — опрос раз в interval секунд с бэкоффом при ошибках. Realtime-источники переопределяют run()."""
         failures = 0
         while True:
+            if self.human and not in_work_hours(self.work_hours, self.tz):
+                await asyncio.sleep(600)
+                continue
             try:
                 leads = await self.poll()
                 found = 0
@@ -42,11 +52,28 @@ class Source:
                 self.found_total += found
                 self.last_ok, self.last_error, failures = time.time(), None, 0
                 log.info("%s: %d записей, %d новых лидов", self.name, len(leads), found)
+            except (CaptchaError, NeedLoginError) as e:
+                failures += 1
+                self.last_error = str(e)[:200]
+                log.warning("%s: %s", self.name, e)
+                await self._alert(f"⚠️ {self.name}: {e}. Пауза {self._backoff(failures) // 60} мин.")
             except Exception as e:
                 failures += 1
                 self.last_error = f"{type(e).__name__}: {e}"[:200]
                 log.exception("%s: ошибка опроса", self.name)
-            await asyncio.sleep(min(self.interval * (2 ** min(failures, 4)), 6 * 3600) if failures else self.interval)
+                if failures == 3:
+                    await self._alert(f"⚠️ {self.name} не работает третий раз подряд: {self.last_error}")
+            await asyncio.sleep(self._backoff(failures) if failures else self.interval)
+
+    def _backoff(self, failures: int) -> int:
+        return min(self.interval * (2 ** min(failures, 4)), 6 * 3600)
+
+    async def _alert(self, text: str) -> None:
+        if self.alert:
+            try:
+                await self.alert(text)
+            except Exception:
+                log.exception("alert failed")
 
     def status_line(self) -> str:
         if self.last_error:

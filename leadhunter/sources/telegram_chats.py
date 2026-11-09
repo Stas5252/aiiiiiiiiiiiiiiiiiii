@@ -88,6 +88,14 @@ class TelegramChatsSource(Source):
                 out.append({"title": d.title, "id": d.entity.id, "username": getattr(d.entity, "username", None)})
         return out
 
+    async def send_dm(self, contact: str, text: str) -> None:
+        """Личное сообщение клиенту с вашего аккаунта. Лимит в день задаётся в настройках — спам = бан."""
+        if contact.startswith("tg://user?id="):
+            entity = int(contact.split("=")[1])
+        else:
+            entity = contact.lstrip("@")
+        await self.client.send_message(entity, text)
+
     # --- основной цикл ---
     async def run(self, emit: Emit) -> None:
         await self.client.start()

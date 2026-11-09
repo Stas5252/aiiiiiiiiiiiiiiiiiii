@@ -30,6 +30,42 @@ class Settings(BaseSettings):
     profile: str = DEFAULT_PROFILE  # что продаём — идёт в промпт ИИ; меняется через /profile
     search_phrases: StrList = Field(default_factory=lambda: list(DEFAULT_PHRASES))
 
+    # «Человеческий» режим для источников без API: прокси, рабочие часы, браузерные профили
+    proxy_url: str | None = None  # http://user:pass@host:port — лучше резидентный/мобильный
+    work_hours: str = "8-23"
+    browser_profiles_dir: str = "data/profiles"
+    browser_headless: bool = True
+
+    # Threads без API (поиск без логина). Если задан THREADS_ACCESS_TOKEN — используется официальный API
+    threads_web_enabled: bool = True
+
+    # Биржи без логина
+    kwork_enabled: bool = True
+    kwork_categories: StrList = Field(default_factory=lambda: ["11", "all"])  # 11 = Разработка и IT, all = все
+    kwork_pages: int = 3
+    kwork_interval: int = 600
+    weblancer_enabled: bool = True
+    weblancer_urls: StrList = Field(default_factory=lambda: ["https://www.weblancer.net/jobs/"])
+    weblancer_interval: int = 900
+    freelance_ru_enabled: bool = True
+    freelance_ru_queries: StrList = Field(default_factory=lambda: ["сайт", "лендинг", "бот", "автоматизация", "нейросеть", "мультик"])
+    freelance_ru_interval: int = 900
+
+    # Яндекс.Карты без API + аудит сайтов организаций (мёртвый / без HTTPS / не мобильный → лид на редизайн)
+    yandex_web_enabled: bool = True
+    site_audit_enabled: bool = True
+    site_audit_per_poll: int = 30
+
+    # Instagram через залогиненный браузерный профиль (python -m leadhunter.browser.login instagram)
+    ig_web_enabled: bool = False
+    ig_web_per_poll: int = 3
+
+    # Отправка черновика клиенту через ваш Telegram-аккаунт: лимит в день (0 = выключено)
+    tg_outreach_limit: int = 0
+
+    # Вебхук для CRM / n8n / Google Sheets: POST JSON с каждым лидом
+    webhook_url: str | None = None
+
     # Telegram-аккаунт (Telethon) для чтения чатов. Бот сам в чужие чаты не попадёт.
     tg_api_id: int | None = None
     tg_api_hash: str | None = None
@@ -102,7 +138,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "tg_chats", "tg_join_chats", "tg_search_words", "ig_hashtags", "yandex_cities", "yandex_queries",
-        "rss_feeds", "hh_queries", "web_search_sites", "search_phrases", mode="before",
+        "rss_feeds", "hh_queries", "web_search_sites", "search_phrases", "kwork_categories", "weblancer_urls",
+        "freelance_ru_queries", mode="before",
     )
     @classmethod
     def _split_strs(cls, v):

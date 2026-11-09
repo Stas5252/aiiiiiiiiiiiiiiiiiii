@@ -5,6 +5,7 @@ import httpx
 
 from ..config import Settings
 from ..models import Lead
+from ..phrases import PhraseProvider
 from .base import Source
 
 API = "https://api.vk.com/method/newsfeed.search"
@@ -32,9 +33,9 @@ def parse_posts(data: dict) -> list[Lead]:
 class VKSource(Source):
     name = "vk"
 
-    def __init__(self, s: Settings):
+    def __init__(self, s: Settings, phrases: PhraseProvider):
         self.token = s.vk_token
-        self.phrases = s.search_phrases
+        self.phrases = phrases
         self.interval = s.vk_interval
         self.since = int(time.time()) - 24 * 3600
 
@@ -42,7 +43,7 @@ class VKSource(Source):
         leads: list[Lead] = []
         now = int(time.time())
         async with httpx.AsyncClient(timeout=30) as c:
-            for q in self.phrases:
+            for q in await self.phrases.get():
                 r = await c.get(API, params={"q": q, "count": 200, "start_time": self.since,
                                              "access_token": self.token, "v": "5.199"})
                 r.raise_for_status()

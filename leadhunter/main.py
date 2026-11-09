@@ -6,13 +6,15 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
-from .bot.handlers import build_digest, build_router
+from .bot.handlers import BotDeps, build_digest, build_router
 from .bot.notify import TelegramNotifier
 from .config import Settings
 from .db import Database
 from .llm import LLMClassifier
+from .phrases import PhraseProvider, default_phrases
 from .pipeline import Pipeline
 from .sources import build_sources
+from .webhook import MultiNotifier, WebhookNotifier
 
 log = logging.getLogger("leadhunter")
 
@@ -37,22 +39,27 @@ async def run() -> None:
     await db.connect()
 
     bot = Bot(s.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
-    notifier = TelegramNotifier(bot, db, s.owner_ids)
+    tg_notifier = TelegramNotifier(bot, db, s.owner_ids, outreach_enabled=s.tg_outreach_limit > 0)
+    notifier = MultiNotifier(tg_notifier, WebhookNotifier(s.webhook_url) if s.webhook_url else None)
     llm = None
     if s.openai_api_key:
         llm = LLMClassifier(s.openai_api_key, s.openai_base_url, s.openai_model, s.llm_max_per_hour)
     pipeline = Pipeline(db, notifier, s.score_threshold, llm, max_age_hours=s.max_age_hours,
                         llm_min_score=s.llm_min_score, profile=s.profile)
 
-    sources = build_sources(s, db)
+    phrases = PhraseProvider(db, default_phrases(s))
+    sources = build_sources(s, db, phrases)
+    for src in sources:
+        src.alert = tg_notifier.send
     log.info("источники: %s; ИИ: %s", ", ".join(x.name for x in sources) or "нет", s.openai_model if llm else "выкл")
 
     dp = Dispatcher()
-    dp.include_router(build_router(db, sources, s.owner_ids))
+    dp.include_router(build_router(BotDeps(db, sources, s.owner_ids, phrases, llm, s.profile,
+                                           s.tg_outreach_limit, s.digest_tz)))
 
     tasks = [asyncio.create_task(src.run(pipeline.handle), name=src.name) for src in sources]
     if s.digest_hour is not None:
-        tasks.append(asyncio.create_task(digest_loop(db, notifier, s.digest_hour, s.digest_tz), name="digest"))
+        tasks.append(asyncio.create_task(digest_loop(db, tg_notifier, s.digest_hour, s.digest_tz), name="digest"))
     try:
         await dp.start_polling(bot)
     finally:

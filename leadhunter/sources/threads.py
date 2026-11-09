@@ -5,6 +5,7 @@ import httpx
 
 from ..config import Settings
 from ..models import Lead
+from ..phrases import PhraseProvider
 from .base import Source
 
 API = "https://graph.threads.net/v1.0/keyword_search"
@@ -36,9 +37,9 @@ class ThreadsSource(Source):
 
     name = "threads"
 
-    def __init__(self, s: Settings):
+    def __init__(self, s: Settings, phrases: PhraseProvider):
         self.token = s.threads_access_token
-        self.phrases = s.search_phrases
+        self.phrases = phrases
         self.interval = s.threads_interval
         self.since = int(time.time()) - 24 * 3600
 
@@ -46,7 +47,7 @@ class ThreadsSource(Source):
         leads: list[Lead] = []
         now = int(time.time())
         async with httpx.AsyncClient(timeout=30) as c:
-            for q in self.phrases:
+            for q in await self.phrases.get():
                 r = await c.get(API, params={"q": q, "search_type": "RECENT", "fields": FIELDS,
                                              "since": self.since, "access_token": self.token})
                 r.raise_for_status()
