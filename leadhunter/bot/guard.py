@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 # Общие id Telegram: анонимный админ группы, «канал от имени», служебный аккаунт — это не люди
 ANONYMOUS_IDS = frozenset({1087968824, 136817688, 777000})
 MEMBER_TTL = 15 * 60  # сколько секунд верим прошлому ответу Telegram о членстве в группе
-MAX_CLAIM_FAILS = 5  # после стольких неверных кодов код владельца меняется
+MAX_CLAIM_FAILS = 5  # столько неверных кодов может прислать один человек; дальше его коды не принимаются до перезапуска
+MAX_CLAIM_FAILS_TOTAL = 1000  # столько неверных кодов со всех аккаунтов — и код меняется (защита от перебора толпой)
 
 
 def _present(member) -> bool:
@@ -33,8 +34,9 @@ class Guard:
         self.static_owners = static_owners
         self.member_ttl = member_ttl
         self.claim_code: str | None = None
-        self._claim_fails = 0
-        self._checked: dict[int, tuple[float, bool]] = {}  # user_id -> (когда спросили Telegram, в группе ли)
+        self._claim_fails: dict[int, int] = {}  # user_id -> сколько неверных кодов прислал
+        # user_id -> (когда спросили Telegram, в группе ли, про какую группу спрашивали)
+        self._checked: dict[int, tuple[float, bool, int]] = {}
 
     # --- владельцы ---
     async def owners(self) -> list[int]:
@@ -53,7 +55,7 @@ class Guard:
     def new_claim_code(self) -> str:
         """Одноразовый код: кто пришлёт его боту в личку (/start КОД), станет владельцем."""
         self.claim_code = secrets.token_hex(4)
-        self._claim_fails = 0
+        self._claim_fails = {}
         return self.claim_code
 
     async def claim(self, user: User, chat_type: str, code: str) -> bool:
@@ -61,13 +63,20 @@ class Guard:
             return False
         if chat_type != "private" or user.is_bot or user.id in ANONYMOUS_IDS:
             return False
-        if not hmac.compare_digest(code.strip().lower().encode(), self.claim_code.encode()):
-            self._claim_fails += 1
-            if self._claim_fails >= MAX_CLAIM_FAILS:
+        code = code.strip().lower()
+        # Дальше до записи владельца нет ни одного await: два одновременных запроса не пройдут проверку оба
+        if not code or not self.claim_code or self._claim_fails.get(user.id, 0) >= MAX_CLAIM_FAILS:
+            return False  # /start без кода — не попытка; перебиравший коды заблокирован
+        if not hmac.compare_digest(code.encode(), self.claim_code.encode()):
+            self._claim_fails[user.id] = self._claim_fails.get(user.id, 0) + 1
+            if self._claim_fails[user.id] == MAX_CLAIM_FAILS:
+                log.warning("id %s прислал %s неверных кодов владельца — его коды больше не принимаются до перезапуска бота",
+                            user.id, MAX_CLAIM_FAILS)
+            if sum(self._claim_fails.values()) >= MAX_CLAIM_FAILS_TOTAL:
                 log.warning("Слишком много неверных кодов владельца — код сменён. Новый: /start %s", self.new_claim_code())
             return False
-        await self.db.set_setting("owner_ids", str(user.id))
         self.claim_code = None
+        await self.db.set_setting("owner_ids", str(user.id))
         log.info("владелец бота назначен по коду: id %s", user.id)
         return True
 
@@ -92,6 +101,8 @@ class Guard:
         if ws is None or self.bot is None:
             return True  # группы нет — команду ведёт владелец через /team_del
         hit = self._checked.get(user_id)
+        if hit and hit[2] != ws:
+            hit = None  # ответ был про прежнюю рабочую группу — в новой он ничего не значит
         if hit and not force and time.monotonic() - hit[0] < self.member_ttl:
             return hit[1]
         present = await self._in_workspace(ws, user_id)
@@ -100,7 +111,7 @@ class Guard:
         if not present:
             await self.drop_member(user_id)
             return False
-        self._checked[user_id] = (time.monotonic(), True)
+        self._checked[user_id] = (time.monotonic(), True, ws)
         return True
 
     async def drop_member(self, user_id: int) -> None:
@@ -122,7 +133,7 @@ class Guard:
         ws = await self._workspace()
         if ws is not None and chat_id == ws and await self._in_workspace(ws, user.id):
             await self.db.add_member(user.id, user.full_name)
-            self._checked[user.id] = (time.monotonic(), True)
+            self._checked[user.id] = (time.monotonic(), True, ws)
             return True
         return False
 
@@ -133,7 +144,7 @@ class Guard:
         user_id = event.new_chat_member.user.id
         if _present(event.new_chat_member):
             if await self.db.is_member(user_id):
-                self._checked[user_id] = (time.monotonic(), True)
+                self._checked[user_id] = (time.monotonic(), True, event.chat.id)
         else:
             await self.drop_member(user_id)
 
