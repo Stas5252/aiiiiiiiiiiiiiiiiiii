@@ -225,6 +225,20 @@ async def test_v1_two_simultaneous_claims_give_one_owner(fresh):
     assert await fresh.db.get_setting("owner_ids") == str(users[won.index(True)].id)
 
 
+async def test_v1_code_survives_failed_owner_save(fresh, monkeypatch):
+    code = fresh.guard.claim_code
+    save = fresh.db.set_setting
+
+    async def locked(key, value):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(fresh.db, "set_setting", locked)
+    await fresh.cmd(f"/start {code}")
+    assert not await fresh.db.get_setting("owner_ids") and fresh.guard.claim_code == code
+    monkeypatch.setattr(fresh.db, "set_setting", save)  # база ожила — тот же код срабатывает без перезапуска
+    assert "ищу вам клиентов" in await fresh.say(f"/start {code}")
+
+
 async def test_v1_group_and_anonymous_admin_cannot_become_owner(fresh):
     code = fresh.guard.claim_code
     assert await fresh.say("/start", ANON, GROUP) == ""

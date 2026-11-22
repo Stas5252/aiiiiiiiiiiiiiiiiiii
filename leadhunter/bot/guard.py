@@ -75,8 +75,12 @@ class Guard:
             if sum(self._claim_fails.values()) >= MAX_CLAIM_FAILS_TOTAL:
                 log.warning("Слишком много неверных кодов владельца — код сменён. Новый: /start %s", self.new_claim_code())
             return False
-        self.claim_code = None
-        await self.db.set_setting("owner_ids", str(user.id))
+        valid, self.claim_code = self.claim_code, None
+        try:
+            await self.db.set_setting("owner_ids", str(user.id))
+        except BaseException:
+            self.claim_code = valid  # владелец не записан — код остаётся в силе
+            raise
         log.info("владелец бота назначен по коду: id %s", user.id)
         return True
 
