@@ -4,7 +4,8 @@
 # Для автоматики (без вопросов): BOT_TOKEN=... [GEMINI_API_KEY=...] LEADHUNTER_YES=1 ./install.sh
 # Ещё переменные: LEADHUNTER_NO_DOCKER=1 — ставить через Python, Docker не трогать;
 #   LEADHUNTER_ENV_ONLY=1 — только подготовить .env; LEADHUNTER_SKIP_NET=1 — не проверять токен в Telegram;
-#   LEADHUNTER_DIR, LEADHUNTER_REPO, LEADHUNTER_BRANCH — куда и откуда скачивать код.
+#   LEADHUNTER_DIR, LEADHUNTER_REPO, LEADHUNTER_BRANCH — куда и откуда скачивать код
+#   (LEADHUNTER_BRANCH при повторном запуске переключает уже скачанный проект на эту ветку).
 set -euo pipefail
 
 REPO_URL="${LEADHUNTER_REPO:-https://github.com/Stas5252/aiiiiiiiiiiiiiiiiiii.git}"
@@ -116,6 +117,14 @@ if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DI
     exec bash "$TARGET/install.sh" "$@"
 fi
 cd "$SELF_DIR"
+
+# Запуск из самой папки проекта с другой веткой (например, прежнюю ветку на сервере удалили)
+if [ -n "$BRANCH" ] && [ -d .git ] && command -v git >/dev/null 2>&1 && ! on_branch "$SELF_DIR"; then
+    say "Переключаю проект на ветку $BRANCH"
+    switch_branch "$SELF_DIR" \
+        || die "Не удалось переключить проект на ветку $BRANCH (причина — выше). Проверьте название ветки и интернет."
+    exec bash "$SELF_DIR/install.sh" "$@"
+fi
 
 # ---------- .env ----------
 # Значение передаётся через окружение awk: не попадает ни в вывод, ни в аргументы процессов.
