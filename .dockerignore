@@ -1,0 +1,15 @@
+# В образ идут только pyproject.toml и leadhunter/ — остальное не отправляем в сборку (быстрее и без секретов)
+.git
+.env
+.venv
+venv
+data
+exports
+bin
+build
+tests
+docs
+*.session
+*.db
+__pycache__
+*.egg-info

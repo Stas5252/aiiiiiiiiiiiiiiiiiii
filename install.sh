@@ -2,11 +2,17 @@
 # Установщик LeadHunter «для чайников»: спросит токен бота, поставит всё нужное и запустит.
 # Запуск:  curl -fsSL https://raw.githubusercontent.com/Stas5252/aiiiiiiiiiiiiiiiiiii/main/install.sh | bash
 # Для автоматики (без вопросов): BOT_TOKEN=... [GEMINI_API_KEY=...] LEADHUNTER_YES=1 ./install.sh
+# Ещё переменные: LEADHUNTER_NO_DOCKER=1 — ставить через Python, Docker не трогать;
+#   LEADHUNTER_ENV_ONLY=1 — только подготовить .env; LEADHUNTER_SKIP_NET=1 — не проверять токен в Telegram;
+#   LEADHUNTER_DIR, LEADHUNTER_REPO, LEADHUNTER_BRANCH — куда и откуда скачивать код.
 set -euo pipefail
 
-REPO_URL="https://github.com/Stas5252/aiiiiiiiiiiiiiiiiiii.git"
+REPO_URL="${LEADHUNTER_REPO:-https://github.com/Stas5252/aiiiiiiiiiiiiiiiiiii.git}"
+BRANCH="${LEADHUNTER_BRANCH:-}"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 YES="${LEADHUNTER_YES:-}"
+# Только для тестов: папка вместо корня системы (там ищем etc/os-release, run/systemd, etc/systemd)
+ROOT="${LEADHUNTER_ROOT:-}"
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()   { printf '  ✅ %s\n' "$*"; }
@@ -26,33 +32,66 @@ confirm() { # confirm <вопрос> [по умолчанию y|n]
     local def="${2:-y}"
     if [ -n "$YES" ]; then [ "$def" = y ]; return; fi
     tty_read 0 "$1 [$([ "$def" = y ] && echo Д/н || echo д/Н)] "
-    case "${REPLY,,}" in
-        д|да|y|yes) return 0 ;;
-        н|нет|n|no) return 1 ;;
+    case "$REPLY" in
+        д|Д|да|Да|ДА|y|Y|yes|Yes|YES) return 0 ;;
+        н|Н|нет|Нет|НЕТ|n|N|no|No|NO) return 1 ;;
         *) [ "$def" = y ] ;;
     esac
 }
 
 SUDO=""
-if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+CAN_ROOT=0
+if [ "$(id -u)" -eq 0 ]; then CAN_ROOT=1
+elif command -v sudo >/dev/null 2>&1; then SUDO="sudo"; CAN_ROOT=1; fi
+as_root() { if [ -n "$SUDO" ]; then sudo "$@"; else "$@"; fi; }
 
 OS="other"
 case "$(uname -s)" in
     Darwin) OS="mac" ;;
-    Linux)  if [ -r /etc/os-release ] && grep -qiE 'ubuntu|debian' /etc/os-release; then OS="debian"; else OS="linux"; fi ;;
+    Linux)  if [ -r "$ROOT/etc/os-release" ] && grep -qiE 'ubuntu|debian' "$ROOT/etc/os-release"; then OS="debian"; else OS="linux"; fi ;;
 esac
 
+APT_UPDATED=0
+apt_install() { # apt_install <пакеты…>; 1 — если поставить не вышло
+    if [ "$CAN_ROOT" != 1 ]; then
+        warn "Чтобы поставить ($*), нужны права администратора: запустите установщик от root или установите sudo."
+        return 1
+    fi
+    if [ "$APT_UPDATED" = 0 ]; then
+        as_root env DEBIAN_FRONTEND=noninteractive apt-get update -y -q >/dev/null || warn "apt-get update не прошёл — пробую ставить так."
+        APT_UPDATED=1
+    fi
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -q "$@"
+}
+
+ensure_curl() {
+    if command -v curl >/dev/null 2>&1; then return 0; fi
+    [ "$OS" = debian ] || return 1
+    confirm "Нужен curl (им скачиваются файлы). Установить через apt?" y || return 1
+    apt_install curl ca-certificates >/dev/null || return 1
+    command -v curl >/dev/null 2>&1
+}
+
 # ---------- где лежит проект ----------
-if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ]; then
+if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DIR/leadhunter" ]; then
     say "Скачиваю LeadHunter"
     if ! command -v git >/dev/null 2>&1; then
         [ "$OS" = debian ] || die "Установите git и запустите снова."
         confirm "Нужен git. Установить через apt?" y || die "Без git не получится."
-        $SUDO apt-get update -y && $SUDO apt-get install -y git
+        apt_install git ca-certificates || die "Не удалось поставить git."
     fi
     TARGET="${LEADHUNTER_DIR:-$HOME/leadhunter}"
-    if [ -d "$TARGET/.git" ]; then git -C "$TARGET" pull --ff-only || warn "Не удалось обновить, использую то, что есть."
-    else git clone --depth 1 "$REPO_URL" "$TARGET"; fi
+    if [ -d "$TARGET/.git" ]; then
+        git -C "$TARGET" pull --ff-only || warn "Не удалось обновить, использую то, что есть."
+    elif [ -n "$BRANCH" ]; then
+        git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TARGET" \
+            || die "Не удалось скачать ветку $BRANCH из $REPO_URL. Проверьте интернет и адрес."
+    else
+        git clone --depth 1 "$REPO_URL" "$TARGET" \
+            || die "Не удалось скачать $REPO_URL. Проверьте интернет; если репозиторий закрытый — нужен доступ к нему."
+    fi
+    [ -f "$TARGET/install.sh" ] \
+        || die "В скачанной папке $TARGET нет install.sh (в этой ветке нет кода). Укажите ветку: LEADHUNTER_BRANCH=dev"
     exec bash "$TARGET/install.sh" "$@"
 fi
 cd "$SELF_DIR"
@@ -66,12 +105,20 @@ set_env() { # set_env KEY VALUE
 }
 get_env() { { grep -E "^$1=" .env 2>/dev/null || true; } | head -1 | cut -d= -f2- | sed 's/[[:space:]]*#.*$//'; }
 
+# .env из старого образца: «KEY=   # комментарий». Docker Compose передаёт такой комментарий боту как значение.
+fix_env_comments() {
+    local tmp; tmp="$(mktemp)"
+    sed -E 's/^([A-Za-z_][A-Za-z0-9_]*)=[[:space:]]+#.*$/\1=/' .env > "$tmp"
+    cat "$tmp" > .env; rm -f "$tmp"
+}
+
 valid_token() { [[ "$1" =~ ^[0-9]{5,}:[A-Za-z0-9_-]{30,}$ ]]; }
 
 setup_env() {
     say "Настройка бота"
     [ -f .env ] || cp .env.example .env
     chmod 600 .env 2>/dev/null || true
+    fix_env_comments
 
     local token="${BOT_TOKEN:-}" current; current="$(get_env BOT_TOKEN)"
     if [ -z "$token" ] && valid_token "$current"; then
@@ -105,25 +152,45 @@ setup_env() {
     fi
     if [ -n "$gem" ]; then set_env GEMINI_API_KEY "$gem"; fi
 
-    set_env MINIAPP_TUNNEL "cloudflare"
+    # Кабинет: бесплатный туннель, если владелец не задал свой адрес или другой режим
+    if [ -z "$(get_env MINIAPP_URL)" ] && [ -z "$(get_env MINIAPP_TUNNEL)" ]; then set_env MINIAPP_TUNNEL "cloudflare"; fi
     ok ".env готов (права 600, ключи не показываются)"
 }
 
 # ---------- Docker ----------
-DOCKER=""
+DOCKER_CMD=""
+dk() { if [ "$DOCKER_CMD" = "sudo docker" ]; then sudo docker "$@"; else docker "$@"; fi; }
 docker_ready() {
     command -v docker >/dev/null 2>&1 || return 1
-    if docker info >/dev/null 2>&1; then DOCKER="docker"
-    elif [ -n "$SUDO" ] && $SUDO docker info >/dev/null 2>&1; then DOCKER="$SUDO docker"
+    if docker info >/dev/null 2>&1; then DOCKER_CMD="docker"
+    elif [ -n "$SUDO" ] && sudo docker info >/dev/null 2>&1; then DOCKER_CMD="sudo docker"
     else return 1; fi
-    $DOCKER compose version >/dev/null 2>&1
+    dk compose version >/dev/null 2>&1
 }
 
+install_docker() { # 1 — если Docker поставить не вышло (тогда ставим через Python)
+    ensure_curl || { warn "Нет curl — Docker поставить не могу."; return 1; }
+    if [ "$CAN_ROOT" != 1 ]; then warn "Для установки Docker нужны права администратора (root или sudo)."; return 1; fi
+    say "Ставлю Docker (официальный скрипт get.docker.com, 1–3 минуты)"
+    local script; script="$(mktemp)"
+    if ! curl -fsSL -o "$script" https://get.docker.com; then
+        rm -f "$script"; warn "Не удалось скачать установщик Docker (нет сети?)."; return 1
+    fi
+    if ! as_root sh "$script"; then rm -f "$script"; warn "Docker не установился."; return 1; fi
+    rm -f "$script"
+    if [ -n "$SUDO" ]; then sudo usermod -aG docker "$(id -un)" 2>/dev/null || true; fi
+}
+
+STARTED=0
 run_docker() {
-    say "Запускаю в Docker (первая сборка занимает 3–10 минут)"
-    $DOCKER compose up -d --build
+    say "Собираю образ Docker (первая сборка занимает 3–10 минут)"
+    dk compose build || die "Docker не смог собрать образ (ошибка выше). Можно поставить без Docker: LEADHUNTER_NO_DOCKER=1 ./install.sh"
+    dk compose run --rm --no-deps -T leadhunter python -m leadhunter.config \
+        || die "Бот не принимает настройки из .env (что именно — выше). Исправьте файл и запустите ./install.sh снова."
+    dk compose up -d || die "Не удалось запустить контейнер (ошибка выше)."
+    STARTED=1
     ok "Контейнер запущен"
-    echo "  Логи: $DOCKER compose logs -f    Остановить: $DOCKER compose down"
+    echo "  Логи: $DOCKER_CMD compose logs -f    Остановить: $DOCKER_CMD compose down"
 }
 
 # ---------- Python-режим ----------
@@ -137,6 +204,17 @@ find_python() {
     return 1
 }
 
+make_venv() { # make_venv <python>
+    [ -x .venv/bin/pip ] && return 0
+    rm -rf .venv
+    if "$1" -m venv .venv >/dev/null 2>&1 && [ -x .venv/bin/pip ]; then return 0; fi
+    rm -rf .venv
+    [ "$OS" = debian ] || return 1
+    # На Ubuntu/Debian модуль venv лежит в отдельном пакете
+    apt_install python3-venv >/dev/null || return 1
+    "$1" -m venv .venv && [ -x .venv/bin/pip ]
+}
+
 run_python() {
     say "Устанавливаю без Docker (Python)"
     local py=""
@@ -144,7 +222,7 @@ run_python() {
     if [ -z "$py" ]; then
         case "$OS" in
             debian) confirm "Нужен Python 3.11+. Установить через apt?" y || die "Без Python не получится."
-                    $SUDO apt-get update -y && $SUDO apt-get install -y python3 python3-venv python3-pip ;;
+                    apt_install python3 python3-venv python3-pip >/dev/null || die "Не удалось поставить Python." ;;
             mac)    command -v brew >/dev/null 2>&1 || die "Нужен Homebrew (https://brew.sh) или Docker Desktop (https://docker.com/products/docker-desktop)."
                     confirm "Нужен Python 3.12. Установить через brew?" y || die "Без Python не получится."
                     brew install python@3.12 ;;
@@ -157,7 +235,7 @@ run_python() {
     if ! command -v ffmpeg >/dev/null 2>&1 || { [ "$OS" = debian ] && ! dpkg -s fonts-dejavu-core >/dev/null 2>&1; }; then
         case "$OS" in
             debian) if confirm "Для видео и картинок нужны ffmpeg и шрифты. Установить через apt?" y; then
-                        $SUDO apt-get update -y && $SUDO apt-get install -y ffmpeg fonts-dejavu-core python3-venv curl ca-certificates
+                        apt_install ffmpeg fonts-dejavu-core >/dev/null || warn "ffmpeg не поставился — видео и мультики работать не будут."
                     else warn "Без ffmpeg видео и мультики работать не будут."; fi ;;
             mac)    if command -v brew >/dev/null 2>&1 && confirm "Для видео нужен ffmpeg. Установить через brew?" y; then brew install ffmpeg
                     else warn "Без ffmpeg видео и мультики работать не будут."; fi ;;
@@ -165,10 +243,10 @@ run_python() {
         esac
     fi
 
-    [ -d .venv ] || "$py" -m venv .venv || die "Не удалось создать .venv (на Ubuntu: sudo apt install python3-venv)."
-    .venv/bin/pip install -q --upgrade pip
+    make_venv "$py" || die "Не удалось создать .venv (на Ubuntu: apt install python3-venv)."
+    .venv/bin/pip install -q --upgrade pip || warn "pip не обновился — продолжаю со старым."
     say "Ставлю зависимости (1–3 минуты)"
-    .venv/bin/pip install -q .
+    .venv/bin/pip install -q . || die "Зависимости не поставились (ошибка выше). Проверьте интернет и запустите ./install.sh снова."
     ok "Зависимости установлены"
     if confirm "Установить браузер для парсинга сайтов (≈300 МБ, нужен для части источников)?" n; then
         .venv/bin/patchright install chromium || warn "Браузер не поставился — источники на нём будут пропущены."
@@ -176,6 +254,8 @@ run_python() {
 
     install_cloudflared
     mkdir -p data
+    .venv/bin/python -m leadhunter.config \
+        || die "Бот не принимает настройки из .env (что именно — выше). Исправьте файл и запустите ./install.sh снова."
     write_service
 }
 
@@ -194,6 +274,7 @@ install_cloudflared() {
         aarch64|arm64) arch=arm64 ;;
         *) warn "Архитектура $arch: поставьте cloudflared вручную — без него кабинет не откроется."; return ;;
     esac
+    if ! ensure_curl; then warn "Нет curl — cloudflared не скачать, кабинет (Mini App) будет выключен."; return; fi
     mkdir -p bin
     if curl -fsSL -o bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch"; then
         chmod +x bin/cloudflared; ok "cloudflared скачан в ./bin"
@@ -203,12 +284,16 @@ install_cloudflared() {
 RUN_CMD=""
 write_service() {
     RUN_CMD="cd '$SELF_DIR' && PATH='$SELF_DIR/bin':\$PATH .venv/bin/python -m leadhunter"
-    local can_root=0
-    if [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; then can_root=1; fi
-    if [ "$OS" = debian ] && [ "$can_root" = 1 ] && command -v systemctl >/dev/null 2>&1 \
-        && confirm "Запускать бота автоматически при старте сервера (systemd)?" y; then
-        local user; user="$(id -un)"
-        $SUDO tee /etc/systemd/system/leadhunter.service >/dev/null <<UNIT
+    if [ "$OS" != debian ] || [ "$CAN_ROOT" != 1 ]; then return 0; fi
+    # systemctl бывает и там, где systemd не запущен (WSL, контейнер) — тогда службу не создаём
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d "$ROOT/run/systemd/system" ]; then
+        warn "systemd здесь не работает (контейнер или WSL) — автозапуск не настраиваю."
+        return 0
+    fi
+    confirm "Запускать бота автоматически при старте сервера (systemd)?" y || return 0
+    local user unit="$ROOT/etc/systemd/system/leadhunter.service"
+    user="$(id -un)"
+    if ! as_root tee "$unit" >/dev/null <<UNIT
 [Unit]
 Description=LeadHunter
 After=network-online.target
@@ -225,10 +310,12 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-        $SUDO systemctl daemon-reload
-        $SUDO systemctl enable --now leadhunter
+    then warn "Не удалось записать службу systemd — запускайте бота вручную."; return 0; fi
+    if as_root systemctl daemon-reload && as_root systemctl enable --now leadhunter; then
+        STARTED=1
         ok "Служба запущена. Логи: journalctl -u leadhunter -f"
-        RUN_CMD=""
+    else
+        warn "Служба systemd не запустилась — запускайте бота вручную (команда ниже)."
     fi
 }
 
@@ -238,7 +325,9 @@ setup_env
 
 if [ -n "${LEADHUNTER_ENV_ONLY:-}" ]; then ok "Только .env (LEADHUNTER_ENV_ONLY)"; exit 0; fi
 
-if docker_ready; then
+if [ -n "${LEADHUNTER_NO_DOCKER:-}" ]; then
+    run_python
+elif docker_ready; then
     ok "Docker найден"
     run_docker
 else
@@ -246,8 +335,7 @@ else
         warn "Docker установлен, но не отвечает (не запущен или нет прав)."
         if [ "$OS" = mac ]; then warn "Откройте приложение Docker Desktop и запустите установщик снова."; fi
     elif [ "$OS" = debian ] && confirm "Docker не найден. Установить его официальным скриптом get.docker.com? (проще всего)" y; then
-        curl -fsSL https://get.docker.com | $SUDO sh
-        if [ -n "$SUDO" ]; then $SUDO usermod -aG docker "$(id -un)" 2>/dev/null || true; fi
+        install_docker || warn "Продолжаю без Docker."
     elif [ "$OS" = mac ]; then
         echo "Для Mac проще всего Docker Desktop: https://docker.com/products/docker-desktop"
     fi
@@ -259,10 +347,13 @@ else
     fi
 fi
 
-say "Готово: напишите боту /start"
-echo "  Дальше в боте: выберите нишу кнопкой → /setup (ключ ИИ) → кнопка «Кабинет»."
-if [ -n "$RUN_CMD" ]; then
-    echo
-    echo "  Запуск бота:  $RUN_CMD"
+if [ "$STARTED" = 1 ]; then
+    say "Готово: бот запущен — напишите ему /start"
+else
+    say "Установка завершена, но бот ещё не запущен"
+    echo "  Запустите его этой командой и не закрывайте окно терминала:"
+    echo "    $RUN_CMD"
+    echo "  Когда бот запустится, напишите ему /start."
 fi
+echo "  Дальше в боте: выберите нишу кнопкой → /setup (ключ ИИ) → кнопка «Кабинет»."
 echo "  Обновление:   ./update.sh"

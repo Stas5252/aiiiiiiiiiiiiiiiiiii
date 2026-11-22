@@ -1,7 +1,13 @@
-from typing import Annotated
+import logging
+import re
+import sys
+from typing import Annotated, get_args, get_origin
+from zoneinfo import ZoneInfo
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+log = logging.getLogger(__name__)
 
 # Списки в .env задаются через запятую: OWNER_IDS=123,456
 StrList = Annotated[list[str], NoDecode]
@@ -17,6 +23,43 @@ DEFAULT_PHRASES = [
     "нужна автоматизация", "ищу кто сделает мультик", "нужен ролик нейросеть", "посоветуйте кто делает сайты",
     "нужен лендинг", "ищу веб разработчика", "кто делает чат ботов", "нужна нейросеть для бизнеса",
 ]
+
+# Значения этих настроек никогда не показываем в сообщениях об ошибках
+SECRET_PARTS = ("token", "key", "secret", "hash", "proxy_url", "webhook_url")
+PLACEHOLDER_TOKEN = "123456:ABC-DEF"  # пример из .env.example
+YES = {"да", "вкл", "включено"}
+NO = {"нет", "выкл", "выключено"}
+
+
+class ConfigError(ValueError):
+    """Ошибка в настройках (.env): текст для человека, на русском, без значений секретов."""
+
+
+def _explain(err: ValidationError) -> str:
+    kinds = {
+        "missing": "не задан — это обязательная настройка",
+        "int_parsing": "нужно целое число",
+        "int_type": "нужно целое число",
+        "int_from_float": "нужно целое число",
+        "bool_parsing": "нужно true или false (можно «да» или «нет»)",
+        "bool_type": "нужно true или false (можно «да» или «нет»)",
+        "string_type": "нужен текст",
+    }
+    lines = []
+    for e in err.errors():
+        field = str(e["loc"][0]) if e["loc"] else ""
+        if e["type"] == "value_error":
+            what = str(e.get("ctx", {}).get("error") or e["msg"])
+        else:
+            what = kinds.get(e["type"]) or f"неверное значение ({e['msg']})"
+        shown = ""
+        value = e.get("input")
+        if field and e["type"] != "missing" and isinstance(value, (str, int, float)) and not isinstance(value, bool) \
+                and str(value).strip() and not any(part in field for part in SECRET_PARTS):
+            shown = f" (сейчас: «{str(value)[:60]}»)"
+        lines.append(f"  • {field.upper()}: {what}{shown}" if field else f"  • {what}")
+    return ("В настройках ошибка — бот не запущен.\n" + "\n".join(lines)
+            + "\nОткройте файл .env, исправьте эти строки и запустите снова. Образец с пояснениями — .env.example.")
 
 
 class Settings(BaseSettings):
@@ -115,9 +158,10 @@ class Settings(BaseSettings):
     rss_feeds: StrList = Field(default_factory=lambda: ["https://www.fl.ru/rss/all.xml"])
     rss_interval: int = 300
 
-    # hh.ru — проектные вакансии (API публичный, нужен User-Agent с контактом)
-    hh_enabled: bool = True
-    hh_user_agent: str = "LeadHunter/0.1 (contact@example.com)"
+    # hh.ru — проектные вакансии (API публичный, нужен User-Agent с контактом).
+    # Выключен по умолчанию: без своего User-Agent с настоящей почтой hh отвечает 400 на каждый запрос
+    hh_enabled: bool = False
+    hh_user_agent: str = ""  # например: LeadHunter/0.1 (вы@ваш-домен.ru); example.com у hh в чёрном списке
     hh_queries: StrList = Field(
         default_factory=lambda: ["разработка сайта", "telegram бот", "автоматизация нейросеть", "ИИ анимация"]
     )
@@ -140,7 +184,7 @@ class Settings(BaseSettings):
     llm_max_per_hour: int = 300
 
     # Ежедневный дайджест
-    digest_hour: int | None = 9
+    digest_hour: int | None = 9  # пусто = дайджест выключен
     digest_tz: str = "Europe/Moscow"
 
     # === Контент-фабрика ===
@@ -163,11 +207,39 @@ class Settings(BaseSettings):
     yt_client_secret: str | None = None
     yt_refresh_token: str | None = None
 
+    def __init__(self, **values):
+        try:
+            super().__init__(**values)
+        except ValidationError as e:
+            raise ConfigError(_explain(e)) from None
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _empty_means_unset(cls, v, info):
+        """«KEY=» в .env — это «не задано»: берём значение по умолчанию, а не падаем на разборе числа.
+        Пустой список остаётся пустым (RSS_FEEDS= выключает источник), пустое необязательное — None."""
+        if not isinstance(v, str):
+            return v
+        field = cls.model_fields[info.field_name]
+        if get_origin(field.annotation) is list:
+            return v
+        if not v.strip():
+            if type(None) in get_args(field.annotation):
+                return None
+            return v if field.is_required() else field.get_default(call_default_factory=True)
+        if field.annotation is bool and v.strip().lower() in YES | NO:
+            return v.strip().lower() in YES
+        return v.strip()
+
     @field_validator("owner_ids", mode="before")
     @classmethod
     def _split_ints(cls, v):
         if isinstance(v, str):
-            return [int(x) for x in v.split(",") if x.strip()]
+            try:
+                return [int(x) for x in v.split(",") if x.strip()]
+            except ValueError:
+                raise ValueError("нужны числа через запятую — ваш Telegram id, например 123456789 "
+                                 "(узнать: напишите @userinfobot)") from None
         return v
 
     @field_validator(
@@ -180,3 +252,87 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [x.strip() for x in v.split(",") if x.strip()]
         return v
+
+    @field_validator("bot_token")
+    @classmethod
+    def _check_token(cls, v):
+        if not v.strip():
+            raise ValueError("не задан — вставьте токен, который выдал @BotFather")
+        if v == PLACEHOLDER_TOKEN:
+            raise ValueError("это пример из .env.example — вставьте свой токен от @BotFather")
+        if not re.fullmatch(r"\d+:\S+", v):
+            raise ValueError("не похоже на токен от @BotFather (нужна строка вида 123456:ABC…, без пробелов)")
+        return v
+
+    @field_validator("digest_hour", "content_hour")
+    @classmethod
+    def _check_hour(cls, v):
+        if v is not None and not 0 <= v <= 23:
+            raise ValueError("нужен час от 0 до 23")
+        return v
+
+    @field_validator("digest_tz")
+    @classmethod
+    def _check_tz(cls, v):
+        try:
+            ZoneInfo(v)
+        except Exception:
+            raise ValueError("неизвестный часовой пояс. Примеры: Europe/Moscow, Asia/Yekaterinburg, "
+                             "Asia/Novosibirsk") from None
+        return v
+
+    @field_validator("work_hours")
+    @classmethod
+    def _check_work_hours(cls, v):
+        m = re.fullmatch(r"(\d{1,2})\s*-\s*(\d{1,2})", v)
+        if not m or int(m.group(1)) > 24 or int(m.group(2)) > 24:
+            raise ValueError("нужны часы работы в виде 8-23 (круглые сутки: 0-24)")
+        return f"{int(m.group(1))}-{int(m.group(2))}"
+
+    @field_validator(
+        "kwork_interval", "weblancer_interval", "freelance_ru_interval", "tg_search_interval", "threads_interval",
+        "ig_interval", "yandex_interval", "rss_interval", "hh_interval", "vk_interval", "web_search_interval",
+    )
+    @classmethod
+    def _check_interval(cls, v):
+        if v <= 0:
+            raise ValueError("нужно число секунд больше нуля")
+        return v
+
+    @field_validator("miniapp_port")
+    @classmethod
+    def _check_port(cls, v):
+        if not 1 <= v <= 65535:
+            raise ValueError("нужен номер порта от 1 до 65535 (обычно 8080)")
+        return v
+
+    @field_validator("miniapp_tunnel")
+    @classmethod
+    def _check_tunnel(cls, v):
+        v = v.lower()
+        if v not in ("", "cloudflare"):
+            raise ValueError("допустимо только cloudflare или пусто")
+        return v
+
+    @model_validator(mode="after")
+    def _hh_needs_contact(self):
+        ua = self.hh_user_agent.lower()
+        if self.hh_enabled and ("@" not in ua or "example.com" in ua):
+            log.warning("hh.ru выключен: в HH_USER_AGENT нужна ваша настоящая почта, например "
+                        "«LeadHunter/0.1 (вы@ваш-домен.ru)». Без неё hh отвечает ошибкой 400.")
+            self.hh_enabled = False
+        return self
+
+
+def main() -> None:
+    """python -m leadhunter.config — проверить .env, не запуская бота (вызывается из install.sh и update.sh)."""
+    try:
+        s = Settings()
+    except ConfigError as e:
+        sys.exit(f"❌ {e}")
+    print(f"✅ Настройки в порядке. База: {s.db_path}, порог: {s.score_threshold}, "
+          f"дайджест: {'выключен' if s.digest_hour is None else f'{s.digest_hour}:00 {s.digest_tz}'}")
+
+
+if __name__ == "__main__":
+    main()
