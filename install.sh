@@ -81,7 +81,14 @@ if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DI
         apt_install git ca-certificates || die "Не удалось поставить git."
     fi
     TARGET="${LEADHUNTER_DIR:-$HOME/leadhunter}"
-    if [ -d "$TARGET/.git" ]; then
+    if [ -d "$TARGET/.git" ] && [ -n "$BRANCH" ] && [ "$(git -C "$TARGET" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" != "$BRANCH" ]; then
+        # Папка скачана с другой ветки (и только с ней: --depth 1) — переключаем на названную
+        if ! { git -C "$TARGET" remote set-branches origin "$BRANCH" \
+               && git -C "$TARGET" fetch --depth 1 origin "$BRANCH" \
+               && git -C "$TARGET" checkout -q -B "$BRANCH" "origin/$BRANCH"; }; then
+            die "Не удалось переключить папку $TARGET на ветку $BRANCH (причина — выше). Проверьте название ветки и интернет."
+        fi
+    elif [ -d "$TARGET/.git" ]; then
         git -C "$TARGET" pull --ff-only || warn "Не удалось обновить, использую то, что есть."
     elif [ -n "$BRANCH" ]; then
         git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TARGET" \
