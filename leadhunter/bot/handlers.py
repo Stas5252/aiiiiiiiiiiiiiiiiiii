@@ -1,10 +1,11 @@
 import html
+import math
 from dataclasses import dataclass, field
 from statistics import median
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, ChatMemberUpdated, Message
 
 from ..db import Database
 from ..llm import LLMClassifier
@@ -13,7 +14,16 @@ from ..sources.base import Source
 from ..sources.telegram_chats import TelegramChatsSource
 from .guard import Guard
 from .notify import STATUS_LABELS
-from .workspace import TOPICS, Workspace
+from .text import answer_long, parse_int
+from .workspace import Workspace
+
+NO_OWNER = """Бот ещё не знает, кто его владелец, поэтому никому не отвечает.
+
+Если это ваш бот — сделайте одно из двух:
+1. Откройте лог бота, найдите строку «Код владельца» и пришлите мне: <code>/start КОД</code>
+2. Или впишите в файл .env строку <code>OWNER_IDS={uid}</code> и перезапустите бота.
+
+Ваш Telegram id: <code>{uid}</code>"""
 
 HELP = """Я ищу лидов и делаю контент под вашу нишу. /niche — выбрать нишу одной командой, /app — кабинет.
 
@@ -98,19 +108,26 @@ def build_router(deps: BotDeps) -> Router:
     async def allowed(m: Message) -> bool:
         return await guard.allowed(m.from_user, m.chat.id)
 
+    @router.chat_member()
+    async def chat_member(event: ChatMemberUpdated):
+        await guard.on_chat_member(event)  # вышел из рабочей группы — доступ снимается сразу
+
     @router.message(Command("start"))
-    async def start(m: Message):
+    async def start(m: Message, command: CommandObject):
         first_owner = False
-        if not deps.guard.static_owners and not await db.get_setting("owner_ids"):
-            # Первый, кто написал боту, становится владельцем — дальше чужих игнорируем
-            await db.set_setting("owner_ids", str(m.from_user.id))
-            first_owner = True
+        if await guard.needs_owner():
+            # Владельцем становится только тот, кто прислал в личку одноразовый код из лога (или указан в OWNER_IDS)
+            if await guard.claim(m.from_user, m.chat.type, command.args or ""):
+                first_owner = True
+            elif m.chat.type == "private" and not m.from_user.is_bot:
+                await m.answer(NO_OWNER.format(uid=m.from_user.id))
+                return
         if not await allowed(m):
             return
         await m.answer(await onboarding_text(deps, first_owner), reply_markup=onboarding_keyboard(deps))
         # Лиды, собранные до появления владельца, досылаем — иначе они молча лежат в базе
         undelivered = await db.undelivered_leads(20)
-        if undelivered and (first_owner or deps.extra.get("redeliver")):
+        if undelivered and deps.extra.get("redeliver"):
             await m.answer(f"Пока вас не было, нашёл {len(undelivered)} лидов — присылаю лучшие:")
             for row in reversed(undelivered):
                 await deps.extra["redeliver"](row)
@@ -152,10 +169,14 @@ def build_router(deps: BotDeps) -> Router:
                                        "max_competitors": await db.get_setting("max_competitors")})
         args = (command.args or "").split()
         if len(args) == 2:
+            comp = parse_int(args[1], 0, 1000)
             try:
-                hours, comp = float(args[0].replace(",", ".")), int(args[1])
+                hours = float(args[0].replace(",", "."))
             except ValueError:
-                await m.answer("Формат: /fresh часы откликов — например /fresh 2 10")
+                hours = math.nan
+            if comp is None or not (math.isfinite(hours) and 0 < hours <= 720):
+                await m.answer("Формат: /fresh часы откликов — например /fresh 2 10\n"
+                               "Часы — от 0 до 720, откликов — от 0 до 1000.")
                 return
             await db.set_setting("board_max_age_hours", str(hours))
             await db.set_setting("max_competitors", str(comp))
@@ -171,6 +192,9 @@ def build_router(deps: BotDeps) -> Router:
         if not await allowed(m):
             return
         url = deps.extra.get("miniapp_url")
+        if deps.extra.get("miniapp_error"):
+            await m.answer("Кабинет сейчас не работает: " + html.escape(deps.extra["miniapp_error"]))
+            return
         if not url:
             await m.answer("Mini App не включён: боту нужен публичный HTTPS-адрес.\n"
                            "Быстро и бесплатно: <code>MINIAPP_TUNNEL=cloudflare</code> в .env — бот сам поднимет туннель и поставит "
@@ -219,16 +243,17 @@ def build_router(deps: BotDeps) -> Router:
             fast = sum(1 for t in times if t <= 5)
             lines.append(f"\n⏱ Скорость реакции за неделю: медиана {median(times):.0f} мин, "
                          f"в первые 5 минут — {fast * 100 // len(times)}%")
-        await m.answer("\n".join(lines))
+        await answer_long(m, "\n".join(lines))
 
     @router.message(Command("team_del"))
     async def team_del(m: Message, command: CommandObject):
         if not await guard.is_owner(m.from_user.id):
             return
-        if not command.args or not command.args.strip().isdigit():
+        uid = parse_int(command.args, 1, 2**62)
+        if uid is None:
             await m.answer("Формат: /team_del user_id (см. /team)")
             return
-        n = await db.remove_member(int(command.args.strip()))
+        n = await db.remove_member(uid)
         await m.answer("Убрал" if n else "Нет такого")
 
     # --- лиды ---
@@ -241,29 +266,32 @@ def build_router(deps: BotDeps) -> Router:
             await m.answer("За сутки лидов нет.")
             return
         total = sum(c for _, c in rows)
-        await m.answer(f"Лидов за 24ч: {total}\n" + "\n".join(f"• {s}: {c}" for s, c in rows))
+        await answer_long(m, f"Лидов за 24ч: {total}\n" + "\n".join(f"• {html.escape(str(s))}: {c}" for s, c in rows))
 
     @router.message(Command("leads"))
     async def leads(m: Message, command: CommandObject):
         if not await allowed(m):
             return
-        n = int(command.args) if command.args and command.args.isdigit() else 10
-        rows = await db.recent_leads(min(n, 30))
-        await m.answer("\n".join(_lead_line(r) for r in rows) if rows else "Лидов пока нет.")
+        arg = (command.args or "").strip()
+        n = parse_int(arg, 1, 30) or (30 if arg.isascii() and arg.isdigit() and int(arg) > 30 else 10)
+        rows = await db.recent_leads(n)
+        await answer_long(m, "\n".join(_lead_line(r) for r in rows) if rows else "Лидов пока нет.", disable_web_page_preview=True)
 
     @router.message(Command("digest"))
     async def digest(m: Message):
         if await allowed(m):
-            await m.answer(await build_digest(db))
+            await answer_long(m, await build_digest(db), disable_web_page_preview=True)
 
     @router.message(Command("funnel"))
     async def funnel(m: Message, command: CommandObject):
         if not await allowed(m):
             return
         args = (command.args or "").split()
-        days = int(args[0]) if args and args[0].isdigit() else 30
+        days = 30
+        if args and args[0].isascii() and args[0].isdigit():
+            days = parse_int(args[0], 1, 3650) or 3650  # больше 10 лет — всё равно «за всё время»
         by = next((a for a in args if a in ("source", "service", "phrase", "chat")), "source")
-        await m.answer(await build_funnel(db, days, by))
+        await answer_long(m, await build_funnel(db, days, by))
 
     @router.message(Command("export"))
     async def export(m: Message):
@@ -287,8 +315,8 @@ def build_router(deps: BotDeps) -> Router:
         for w, cat in kw.topic.items():
             by_cat.setdefault(cat, []).append(w)
         topic = "\n".join(f"  {cat}: {', '.join(ws)}" for cat, ws in by_cat.items())
-        await m.answer(f"<b>Тема</b>:\n{html.escape(topic)}\n\n<b>Намерение</b>: {html.escape(', '.join(kw.intent))}\n\n"
-                       f"<b>Стоп-слова</b>: {html.escape(', '.join(kw.negative))}")
+        await answer_long(m, f"<b>Тема</b>:\n{html.escape(topic)}\n\n<b>Намерение</b>: {html.escape(', '.join(kw.intent))}\n\n"
+                             f"<b>Стоп-слова</b>: {html.escape(', '.join(kw.negative))}")
 
     @router.message(Command("kw_add"))
     async def kw_add(m: Message, command: CommandObject):
@@ -301,7 +329,7 @@ def build_router(deps: BotDeps) -> Router:
         kind, word = parts[0], parts[1]
         category = parts[2] if kind == "topic" and len(parts) > 2 else None
         await db.add_keyword(kind, word, category)
-        await m.answer(f"Добавил «{word}» в {kind}" + (f" ({category})" if category else ""))
+        await m.answer(f"Добавил «{html.escape(word)}» в {kind}" + (f" ({html.escape(category)})" if category else ""))
 
     @router.message(Command("kw_del"))
     async def kw_del(m: Message, command: CommandObject):
@@ -323,9 +351,9 @@ def build_router(deps: BotDeps) -> Router:
                            "+слово — обязательно, (а|б) — любое из, -слово — запрет, \"точная форма\" в кавычках.\n"
                            "Правило только из -слов блокирует всё, что их содержит.")
             return
-        await m.answer("Правила (лид, подходящий под правило, проходит порог автоматически):\n"
-                       + "\n".join(f"{r['id']}. <code>{html.escape(r['expr'])}</code>" for r in rs)
-                       + "\n\nУдалить: /rule_del id")
+        await answer_long(m, "Правила (лид, подходящий под правило, проходит порог автоматически):\n"
+                          + "\n".join(f"{r['id']}. <code>{html.escape(r['expr'])}</code>" for r in rs)
+                          + "\n\nУдалить: /rule_del id")
 
     @router.message(Command("rule_add"))
     async def rule_add(m: Message, command: CommandObject):
@@ -336,6 +364,9 @@ def build_router(deps: BotDeps) -> Router:
             await m.answer("Формат: /rule_add +сайт +(нужен|ищу) -предлагаю")
             return
         try:
+            problem = rule_problem(command.args)
+            if problem:
+                raise ValueError(problem)
             parse_rule(command.args)
         except ValueError as e:
             await m.answer(f"Ошибка в правиле: {html.escape(str(e))}")
@@ -347,10 +378,11 @@ def build_router(deps: BotDeps) -> Router:
     async def rule_del(m: Message, command: CommandObject):
         if not await allowed(m):
             return
-        if not command.args or not command.args.strip().isdigit():
+        rule_id = parse_int(command.args, 1, 2**62)
+        if rule_id is None:
             await m.answer("Формат: /rule_del id")
             return
-        await m.answer("Удалил" if await db.remove_rule(int(command.args)) else "Нет такого")
+        await m.answer("Удалил" if await db.remove_rule(rule_id) else "Нет такого")
 
     @router.message(Command("geo"))
     async def geo(m: Message, command: CommandObject):
@@ -371,11 +403,16 @@ def build_router(deps: BotDeps) -> Router:
     async def threshold(m: Message, command: CommandObject):
         if not await allowed(m):
             return
-        if not command.args or not command.args.isdigit():
-            await m.answer(f"Текущий порог: {await db.get_setting('threshold', 'по умолчанию')}\nФормат: /threshold N")
+        if not command.args:
+            await m.answer(f"Текущий порог: {html.escape(await db.get_setting('threshold', 'по умолчанию'))}\n"
+                           "Формат: /threshold N — число от 0 до 10")
             return
-        await db.set_setting("threshold", command.args)
-        await m.answer(f"Порог: {command.args}")
+        value = parse_int(command.args, 0, 10)
+        if value is None:
+            await m.answer("Порог — целое число от 0 до 10 (оценка лида по десятибалльной шкале). Например: /threshold 6")
+            return
+        await db.set_setting("threshold", str(value))
+        await m.answer(f"Порог: {value}")
 
     @router.message(Command("profile"))
     async def profile(m: Message, command: CommandObject):
@@ -392,8 +429,8 @@ def build_router(deps: BotDeps) -> Router:
     async def phrases_show(m: Message):
         if await allowed(m):
             ps = await deps.phrases.get()
-            await m.answer("Фразы для поиска:\n" + "\n".join(f"• {html.escape(p)}" for p in ps)
-                           + "\n\nИзменить: /phrases_set фраза; фраза; … или /phrases_gen")
+            await answer_long(m, "Фразы для поиска:\n" + "\n".join(f"• {html.escape(p)}" for p in ps)
+                              + "\n\nИзменить: /phrases_set фраза; фраза; … или /phrases_gen")
 
     @router.message(Command("phrases_set"))
     async def phrases_set(m: Message, command: CommandObject):
@@ -402,7 +439,11 @@ def build_router(deps: BotDeps) -> Router:
         if not command.args:
             await m.answer("Формат: /phrases_set нужен сайт; ищу разработчика бота; …")
             return
-        ps = [p for p in command.args.split(";") if p.strip()]
+        ps = list(dict.fromkeys(p.strip() for p in command.args.split(";") if p.strip()))
+        if not ps:
+            await m.answer("Не нашёл ни одной фразы — прежние оставил как были.\n"
+                           "Формат: /phrases_set нужен сайт; ищу разработчика бота; …")
+            return
         await deps.phrases.set(ps)
         await m.answer(f"Сохранил {len(ps)} фраз — источники подхватят на следующем проходе.")
 
@@ -411,7 +452,7 @@ def build_router(deps: BotDeps) -> Router:
         if not await allowed(m):
             return
         if not deps.llm:
-            await m.answer("ИИ не подключён (OPENAI_API_KEY).")
+            await m.answer("ИИ не подключён — добавьте ключ в /setup.")
             return
         profile = await db.get_setting("profile", deps.default_profile) or deps.default_profile
         try:
@@ -430,13 +471,13 @@ def build_router(deps: BotDeps) -> Router:
             await m.answer("Формат: /template_set сайт Здравствуйте! Увидел ваш запрос…")
             return
         await db.set_template(parts[0].lower(), parts[1])
-        await m.answer(f"Шаблон для «{parts[0]}» сохранён")
+        await m.answer(f"Шаблон для «{html.escape(parts[0])}» сохранён")
 
     @router.message(Command("templates"))
     async def templates(m: Message):
         if await allowed(m):
             ts = await db.templates()
-            await m.answer("\n\n".join(f"<b>{html.escape(k)}</b>: {html.escape(v)}" for k, v in ts.items()) or "Шаблонов нет")
+            await answer_long(m, "\n\n".join(f"<b>{html.escape(k)}</b>: {html.escape(v)}" for k, v in ts.items()) or "Шаблонов нет")
 
     @router.message(Command("block"))
     async def block(m: Message, command: CommandObject):
@@ -460,9 +501,9 @@ def build_router(deps: BotDeps) -> Router:
         if not await allowed(m):
             return
         ig = await db.get_ignored()
-        chats = "\n".join(f"  {html.escape(label or key)} ({key})" for key, label in ig["chat"].items()) or "  —"
+        chats = "\n".join(f"  {html.escape(label or key)} ({html.escape(key)})" for key, label in ig["chat"].items()) or "  —"
         authors = ", ".join(html.escape(k) for k in ig["author"]) or "—"
-        await m.answer(f"<b>Чаты</b>:\n{chats}\n<b>Авторы</b>: {authors}\n\nСнять: /unblock ключ")
+        await answer_long(m, f"<b>Чаты</b>:\n{chats}\n<b>Авторы</b>: {authors}\n\nСнять: /unblock ключ")
 
     @router.message(Command("pause"))
     async def pause(m: Message):
@@ -520,7 +561,7 @@ def build_router(deps: BotDeps) -> Router:
             return
         chats = await tg.list_chats()
         lines = [f"• {html.escape(c['title'])}" + (f" (@{c['username']})" if c["username"] else "") for c in chats[:80]]
-        await m.answer(f"Чатов: {len(chats)}\n" + "\n".join(lines))
+        await answer_long(m, f"Чатов: {len(chats)}\n" + "\n".join(lines))
 
     @router.message(Command("chats_rating"))
     async def chats_rating(m: Message):
@@ -532,8 +573,8 @@ def build_router(deps: BotDeps) -> Router:
             return
         lines = [f"• {html.escape(r['title'] or r['chat_key'])}: лидов {r['leads']} из {r['messages']} сообщений"
                  for r in rows]
-        await m.answer("Рейтинг чатов (лиды / сообщения):\n" + "\n".join(lines)
-                       + "\n\nШумные чаты: кнопка «🔇 Чат в игнор» под карточкой")
+        await answer_long(m, "Рейтинг чатов (лиды / сообщения):\n" + "\n".join(lines)
+                          + "\n\nШумные чаты: кнопка «🔇 Чат в игнор» под карточкой")
 
     @router.message(Command("discover"))
     async def discover(m: Message, command: CommandObject):
@@ -565,12 +606,35 @@ def build_router(deps: BotDeps) -> Router:
     return router
 
 
+def rule_problem(expr: str) -> str | None:
+    """Скобки и кавычки в правиле должны быть закрыты; вложенные скобки разбор не понимает."""
+    depth, quoted = 0, False
+    for ch in expr:
+        if ch == '"':
+            quoted = not quoted
+        elif quoted:
+            continue
+        elif ch == "(":
+            depth += 1
+            if depth > 1:
+                return "скобки внутри скобок не поддерживаются"
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return "лишняя закрывающая скобка"
+    if depth:
+        return "не закрыта скобка"
+    if quoted:
+        return "не закрыта кавычка"
+    return None
+
+
 def _lead_line(r) -> str:
     head = html.escape((r["title"] or r["text"] or "")[:80])
     link = f' — <a href="{html.escape(r["url"])}">ссылка</a>' if r["url"] else ""
-    service = f" 🎯{r['service']}" if r["service"] else ""
+    service = f" 🎯{html.escape(r['service'])}" if r["service"] else ""
     who = f" 👤{html.escape(r['assigned_name'])}" if r["assigned_name"] else ""
-    return f"#{r['id']} [{STATUS_LABELS.get(r['status'], r['status'])}] {r['score']}/10 {r['source']}{service}{who}: {head}{link}"
+    return f"#{r['id']} [{STATUS_LABELS.get(r['status'], r['status'])}] {r['score']}/10 {html.escape(r['source'] or '')}{service}{who}: {head}{link}"
 
 
 async def build_digest(db: Database, hours: int = 24) -> str:
@@ -586,9 +650,9 @@ async def build_digest(db: Database, hours: int = 24) -> str:
     untouched = [r for r in rows if r["status"] == "new"]
     top = sorted(untouched, key=lambda r: -r["score"])[:5]
     lines = [f"📊 <b>Дайджест за {hours}ч</b>: {len(rows)} лидов, не разобрано {len(untouched)}"]
-    lines.append("По источникам: " + ", ".join(f"{s} {c}" for s, c in sorted(by_source.items(), key=lambda x: -x[1])))
+    lines.append("По источникам: " + ", ".join(f"{html.escape(s)} {c}" for s, c in sorted(by_source.items(), key=lambda x: -x[1])))
     if by_service:
-        lines.append("По услугам: " + ", ".join(f"{s} {c}" for s, c in sorted(by_service.items(), key=lambda x: -x[1])))
+        lines.append("По услугам: " + ", ".join(f"{html.escape(s)} {c}" for s, c in sorted(by_service.items(), key=lambda x: -x[1])))
     if top:
         lines.append("\n🔥 <b>Топ неразобранных</b>:")
         lines += [_lead_line(r) for r in top]
