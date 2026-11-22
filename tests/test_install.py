@@ -399,6 +399,7 @@ def test_install_switches_existing_copy_to_requested_branch(box):
     (up / "leadhunter/__init__.py").write_text("")
     git(up, "add", "-A")
     git(up, "commit", "-qm", "code")
+    git(up, "branch", "stable")
     git(up, "checkout", "-q", "main")
     shutil.copy(ROOT / "install.sh", start)
     env = {"LEADHUNTER_REPO": f"file://{up}", "LEADHUNTER_DIR": str(target), "LEADHUNTER_ENV_ONLY": "1"}
@@ -412,6 +413,24 @@ def test_install_switches_existing_copy_to_requested_branch(box):
     assert upstream.stdout.strip() == "origin/dev"  # иначе update.sh не найдёт, откуда обновляться
     third = box.run(cwd=start, LEADHUNTER_BRANCH="нет-такой", **env)
     assert third.returncode != 0 and "нет-такой" in third.text
+
+    def out(*args):
+        return subprocess.run(["git", *args], cwd=target, capture_output=True, text=True).stdout.strip()
+
+    # Запуск из самой папки проекта (так советует update.sh, когда ветку на сервере удалили) тоже меняет ветку
+    inside = box.run(cwd=target, LEADHUNTER_BRANCH="stable", LEADHUNTER_ENV_ONLY="1")
+    assert inside.returncode == 0, inside.text
+    assert out("rev-parse", "--abbrev-ref", "HEAD", "@{u}").split() == ["stable", "origin/stable"]
+
+    # Свои коммиты в ветке, на которую переключаемся, остаются
+    git(target, "checkout", "-q", "dev")
+    (target / "mine.txt").write_text("x\n")
+    git(target, "add", "mine.txt")
+    git(target, "commit", "-qm", "mine")
+    git(target, "checkout", "-q", "stable")
+    back = box.run(cwd=start, LEADHUNTER_BRANCH="dev", **env)
+    assert back.returncode == 0, back.text
+    assert out("log", "-1", "--format=%s", "dev") == "mine" and out("rev-parse", "--abbrev-ref", "HEAD") == "dev"
 
 
 def test_install_without_curl_as_root_in_container(box):
@@ -560,7 +579,7 @@ def test_update_branch_deleted_on_server(repo):
     """Ветку, с которой ставили бота, на сервере удалили: не говорим «обновлено», ничего не перезапускаем."""
     git(repo.up, "branch", "-m", "main", "release")
     res = repo.have("systemctl").run("update.sh", cwd=repo.inst, FAKE_UNIT_EXISTS="1")
-    assert res.returncode != 0 and "ветк" in res.text.lower() and "LEADHUNTER_BRANCH" in res.text
+    assert res.returncode != 0 and "ветк" in res.text.lower() and "LEADHUNTER_BRANCH=название_ветки ./install.sh" in res.text
     assert not repo.called("pip") and not repo.called("systemctl restart")
 
 
