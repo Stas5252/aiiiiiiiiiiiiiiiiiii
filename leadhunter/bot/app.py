@@ -4,11 +4,13 @@
 - упавший обработчик не молчит: ошибка уходит в лог, а человеку с доступом — короткое сообщение."""
 import logging
 import time
+import traceback
 
 from aiogram import BaseMiddleware, Dispatcher
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ErrorEvent, Message
+from aiogram.types import ErrorEvent, Message
 
+from ..integrations import scrub
 from .callbacks import build_callbacks
 from .content import build_content_router
 from .handlers import build_router
@@ -21,36 +23,55 @@ STAMP = "_state_at"
 
 
 class StateReset(BaseMiddleware):
-    """Сбрасывает режим ввода, если человек передумал (написал команду) или прошло STATE_TTL."""
+    """Сбрасывает режим ввода, если человек передумал (написал команду), прошло STATE_TTL или у него отозвали доступ."""
+
+    def __init__(self, guard):
+        self.guard = guard
+
+    async def _stale(self, event, state: FSMContext) -> bool:
+        if isinstance(event, Message) and (event.text or event.caption or "").startswith("/"):
+            return True
+        stamp = (await state.get_data()).get(STAMP)
+        if stamp is None or time.time() - stamp > STATE_TTL:
+            return True
+        user = event.from_user
+        chat = event.chat if isinstance(event, Message) else (event.message.chat if event.message else None)
+        return user is None or not await self.guard.allowed(user, chat.id if chat else None)
 
     async def __call__(self, handler, event, data):
         state: FSMContext | None = data.get("state")
         if state is None:
             return await handler(event, data)
-        before = await state.get_state()
-        if before:
-            stamp = (await state.get_data()).get(STAMP)
-            is_command = isinstance(event, Message) and (event.text or event.caption or "").startswith("/")
-            if is_command or (stamp is not None and time.time() - stamp > STATE_TTL):
-                await state.clear()
-                before = None
+        if await state.get_state() and await self._stale(event, state):
+            await state.clear()
+            data["raw_state"] = None  # фильтры aiogram смотрят сюда, а не в хранилище
+        entered = False
+        set_state = state.set_state
+
+        async def tracked(state=None):  # та же сигнатура, что у FSMContext.set_state
+            nonlocal entered
+            entered = state is not None
+            await set_state(state)
+
+        state.set_state = tracked  # отсчёт 5 минут идёт от входа в режим ввода, посторонние кнопки его не продлевают
         try:
             return await handler(event, data)
         finally:
-            after = await state.get_state()
-            if after and (after != before or isinstance(event, CallbackQuery) or STAMP not in await state.get_data()):
+            if entered and await state.get_state():
                 await state.update_data(**{STAMP: time.time()})
 
 
 def install_safety(dp: Dispatcher, deps) -> None:
-    reset = StateReset()
+    reset = StateReset(deps.guard)
     dp.message.outer_middleware(reset)
     dp.callback_query.outer_middleware(reset)
 
     @dp.errors()
     async def on_error(event: ErrorEvent) -> bool:
         upd, exc = event.update, event.exception
-        log.error("обработчик упал (update %s): %s", upd.update_id, type(exc).__name__, exc_info=exc)
+        trace = "".join(traceback.format_exception(exc))
+        s = deps.extra.get("settings")
+        log.error("обработчик упал (update %s): %s\n%s", upd.update_id, type(exc).__name__, scrub(trace, s) if s else trace)
         text = (f"⚠️ Не получилось выполнить: внутренняя ошибка ({type(exc).__name__}). "
                 "Попробуйте ещё раз; если повторится — посмотрите лог бота.")
         try:
