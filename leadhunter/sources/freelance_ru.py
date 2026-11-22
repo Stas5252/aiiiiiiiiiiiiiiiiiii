@@ -35,7 +35,7 @@ def parse_freelance_ru_html(body: str) -> list[Lead]:
         budget = BUDGET_RE.search(card)
         if budget:
             b = strip_html(html.unescape(budget.group(1)))
-            if b and "договор" not in b.lower():
+            if re.search(r"\d", b):  # «Обсуждается индивидуально», «По договорённости» — не сумма
                 text += f"\nГонорар: {b}"
         found = datetime.now(timezone.utc)
         d = DATE_RE.search(card)

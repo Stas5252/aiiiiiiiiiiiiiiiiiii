@@ -103,7 +103,8 @@ def test_freelance_ru_budget_is_amount_not_label():
     priced = [l for l in leads if "Гонорар:" in l.text]
     assert priced, "хотя бы у части заказов сумма указана"
     assert any("2 800 ₽" in l.text for l in priced)
-    assert all(extract_budget(l.text) for l in priced)
+    assert len(priced) == 8 and all(extract_budget(l.text) for l in priced)
+    assert not any("Обсуждается" in l.text for l in leads), "«Обсуждается индивидуально» — не сумма"
 
 
 # --- №14: HTML-сущности ---
