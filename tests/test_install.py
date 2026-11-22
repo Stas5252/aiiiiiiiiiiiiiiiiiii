@@ -383,7 +383,7 @@ def test_install_quoted_empty_miniapp_url_still_gets_tunnel(box, clean_env):
     (box.proj / ".env").write_text(f'BOT_TOKEN="{TOKEN}"\nMINIAPP_URL=""\nMINIAPP_TUNNEL=\n', encoding="utf-8")
     assert box.run(LEADHUNTER_ENV_ONLY="1", BOT_TOKEN="").returncode == 0
     s = Settings(_env_file=box.proj / ".env")
-    assert s.miniapp_url == "" and s.miniapp_tunnel == "cloudflare" and s.bot_token == TOKEN
+    assert not s.miniapp_url and s.miniapp_tunnel == "cloudflare" and s.bot_token == TOKEN
 
 
 def test_install_switches_existing_copy_to_requested_branch(box):

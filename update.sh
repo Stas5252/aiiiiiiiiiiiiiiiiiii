@@ -20,7 +20,7 @@ if ! out="$(git fetch --prune 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/    /' >&2
     die "Не удалось связаться с сервером обновлений: нет интернета или доступа к репозиторию. Проверьте связь и запустите снова."
 fi
-upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+if ! upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then upstream=""; fi
 if [ -z "$upstream" ]; then
     die "Ветки, с которой ставился бот, на сервере нет: её удалили или эта копия к ней не привязана. Запустите команду установки из README заново, добавив перед bash: LEADHUNTER_DIR=\"$PWD\" LEADHUNTER_BRANCH=название_ветки — настройки и база останутся на месте."
 fi
