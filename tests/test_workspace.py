@@ -96,6 +96,8 @@ async def test_sla_overdue(db):
     n = FakeNotifier()
     p = Pipeline(db, n, default_threshold=5)
     await p.handle(lead("1", "Ищу кто сделает сайт и бота для студии, срочно, бюджет"))
+    assert await db.sla_overdue(0, 7) == []  # карточка не доставлена — пинговать нечего
+    await db.set_lead_message(1, 100, 5, None)
     assert [r["id"] for r in await db.sla_overdue(0, 7)] == [1]
     await db.mark_sla_pinged(1)
     assert await db.sla_overdue(0, 7) == []
