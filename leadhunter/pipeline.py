@@ -35,6 +35,9 @@ class Notifier(Protocol):
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None: ...
 
 
+SOURCE_SETTINGS = {'kwork': ('leads_boards', '1'), 'rss': ('leads_boards', '1'), 'weblancer': ('leads_boards', '1'), 'freelance.ru': ('leads_boards', '1'), 'telegram': ('leads_social', '1'), 'vk': ('leads_social', '1'), 'threads': ('leads_social', '1'), 'instagram': ('leads_social', '1'), 'hh.ru': ('leads_jobs', '0'), 'yandex_maps': ('leads_maps', '1'), 'site_audit': ('leads_maps', '1'), 'web': ('leads_web', '0')}
+
+
 class Pipeline:
     """Дедуп → игнор-листы → спам-детект → свежесть → гео → правила → контакты → словарь → ИИ → сохранение → уведомление."""
 
@@ -77,6 +80,13 @@ class Pipeline:
 
     async def handle(self, lead: Lead, *, quiet: bool = False) -> bool:
         """quiet — сохранить без уведомления (лимит пачки у источника)."""
+        if lead.source.startswith("web:"):
+            import re
+            if not re.search(r"\b(?:ищу|ищем|требуется|требуются|закажу|закажем|нужен исполнитель|нужен подрядчик)\b", lead.full_text, re.I):
+                return False
+        setting = SOURCE_SETTINGS.get(lead.source.split(":")[0])
+        if setting and await self.db.get_setting(*setting) != "1":
+            return False
         if not await self.db.mark_seen(lead.source, lead.external_id):
             return False
         if len(lead.full_text) < 15:

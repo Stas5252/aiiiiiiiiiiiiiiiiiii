@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 
 async def publish_due(factory: ContentFactory, publishers: list, notify) -> int:
     """Один проход: всё, чьё время пришло. notify(text) — сообщить владельцу о результате."""
+    if await factory.db.get_setting("schedule_enabled", "1") == "0":
+        return 0
     n = 0
     for row in await factory.store.due():
         if not publishers:

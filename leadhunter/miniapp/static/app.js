@@ -317,12 +317,14 @@ function autosave(patch) {
   saveT = setTimeout(async () => { const body = pendingPatch; pendingPatch = {}; try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(body) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500);
 }
 $$(".stepper button[data-step]").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
+$$("[data-feature]").forEach(el => el.onchange = () => autosave({ [el.dataset.feature]: el.checked }));
 $("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
 $("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
 $("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
 function tag(text, onDel, cls = "") { const el = document.createElement("span"); el.className = "tag " + cls; el.innerHTML = `<code>${esc(text)}</code><button aria-label="удалить">×</button>`; $("button", el).onclick = onDel; return el; }
 function renderSettings(s) {
   S = s;
+  $$("[data-feature]").forEach(el => el.checked = s[el.dataset.feature]);
   $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
   const ph = $("#s-phrases"); ph.replaceChildren(...s.phrases.map((p) => tag(p, async () => renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: s.phrases.filter((x) => x !== p) }) })))));
   const rl = $("#s-rules"); rl.replaceChildren(...s.rules.map((r) => tag(r.expr, async () => { await api("/api/rules/" + r.id, { method: "DELETE" }); loadSettings(); })));

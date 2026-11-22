@@ -162,6 +162,24 @@ class MiniAppAPI:
             "threshold": await self.db.get_setting("threshold", str(self.deps.extra.get("threshold", 5))),
             "profile": await self.db.get_setting("profile") or self.deps.default_profile,
             "geo": await self.db.get_setting("geo", ""),
+            "format_post": await self.db.get_setting("format_post", "1") == "1",
+            "format_carousel": await self.db.get_setting("format_carousel", "1") == "1",
+            "format_reel": await self.db.get_setting("format_reel", "1") == "1",
+            "format_toon": await self.db.get_setting("format_toon", "1") == "1",
+            "format_aivideo": await self.db.get_setting("format_aivideo", "1") == "1",
+            "format_ideas": await self.db.get_setting("format_ideas", "1") == "1",
+            "format_magnet": await self.db.get_setting("format_magnet", "1") == "1",
+            "publish_telegram": await self.db.get_setting("publish_telegram", "1") == "1",
+            "publish_instagram": await self.db.get_setting("publish_instagram", "1") == "1",
+            "publish_threads": await self.db.get_setting("publish_threads", "1") == "1",
+            "publish_vk": await self.db.get_setting("publish_vk", "1") == "1",
+            "publish_youtube": await self.db.get_setting("publish_youtube", "1") == "1",
+            "schedule_enabled": await self.db.get_setting("schedule_enabled", "1") == "1",
+            "leads_boards": await self.db.get_setting("leads_boards", "1") == "1",
+            "leads_social": await self.db.get_setting("leads_social", "1") == "1",
+            "leads_jobs": await self.db.get_setting("leads_jobs", "0") == "1",
+            "leads_maps": await self.db.get_setting("leads_maps", "1") == "1",
+            "leads_web": await self.db.get_setting("leads_web", "0") == "1",
             "paused": (await self.db.get_setting("paused")) == "1",
             "phrases": await self.deps.phrases.get(),
             "rules": [dict(r) for r in await self.db.rules()],
@@ -192,7 +210,7 @@ class MiniAppAPI:
                 await self.db.set_setting("threshold", str(max(0, min(10, int(value)))))
             elif key in ("profile", "geo", "voice", "pillars"):
                 await self.db.set_setting(key, str(value).strip())
-            elif key in ("paused", "autopilot"):
+            elif key in ('paused', 'autopilot', 'leads_boards', 'leads_social', 'leads_jobs', 'leads_maps', 'leads_web', 'format_post', 'format_carousel', 'format_reel', 'format_toon', 'format_aivideo', 'format_ideas', 'format_magnet', 'publish_telegram', 'publish_instagram', 'publish_threads', 'publish_vk', 'publish_youtube', 'schedule_enabled'):
                 await self.db.set_setting(key, "1" if value else "0")
             elif key == "phrases":
                 await self.deps.phrases.set(list(value))

@@ -59,6 +59,8 @@ class ContentFactory:
     # --- создание ---
     async def create(self, kind: str, topic: str, *, created_by: str = "", lead_id: int | None = None,
                      parent_id: int | None = None, data: dict | None = None):
+        if await self.db.get_setting("format_" + kind, "1") == "0":
+            raise ValueError("Этот формат выключен в настройках контента")
         data = data or await self.gen.generate(kind, topic)
         item_id = await self.save(kind, topic, data, created_by=created_by, lead_id=lead_id, parent_id=parent_id)
         await self.render(item_id)
@@ -204,6 +206,9 @@ class ContentFactory:
         results, errors = [], []
         for pub in publishers:
             if wanted and pub.platform not in wanted:
+                continue
+            if await self.db.get_setting("publish_" + pub.platform, "1") == "0":
+                errors.append(f"{pub.label}: публикация выключена в настройках")
                 continue
             try:
                 results.append(await asyncio.wait_for(pub.publish(text, images, video), timeout=300))

@@ -118,6 +118,8 @@ class ContentGenerator:
         return SYSTEM.format(profile=profile, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
 
     async def generate(self, kind: str, topic: str, *, platform: str = "", n: int = 7) -> dict:
+        if await self.db.get_setting("format_" + kind, "1") == "0":
+            raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
             raise RuntimeError("ИИ не подключён — задайте OPENAI_API_KEY в .env")
         if kind not in SCHEMAS:
@@ -128,6 +130,8 @@ class ContentGenerator:
         return self._clean(kind, data)
 
     async def rewrite(self, kind: str, data: dict, instruction: str) -> dict:
+        if await self.db.get_setting("format_" + kind, "1") == "0":
+            raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
             raise RuntimeError("ИИ не подключён — задайте OPENAI_API_KEY в .env")
         system = await self._system(kind)

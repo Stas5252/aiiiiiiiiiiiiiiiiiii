@@ -265,3 +265,4 @@ details.card[open] summary { margin-bottom: 12px; }
 .setup-go { padding: 8px 12px; }
 .setup { gap: 8px; }
 .toast { width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+select option { color: var(--fg); background-color: var(--bg); }

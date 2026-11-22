@@ -18,6 +18,8 @@ def parse_feed(raw: bytes, feed_url: str) -> list[Lead]:
     leads = []
     for e in parsed.entries:
         link = e.get("link", "")
+        if host == "fl.ru" and not urlparse(link).path.startswith("/projects/"):
+            continue
         ext_id = e.get("id") or link
         if not ext_id:
             continue
