@@ -1,7 +1,27 @@
 """Мелочи для ответов бота: длинный текст — частями, числа из команд — без падений."""
+import re
+
 from aiogram.types import Message
 
 TG_LIMIT = 4000  # у Telegram 4096 на сообщение; запас — на эмодзи и разметку
+
+
+_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^<>]*>")
+
+
+def _rebalance(parts: list[str]) -> list[str]:
+    """Тег, открытый в одной части и закрытый в другой, закрываем в конце части и открываем заново в следующей."""
+    out: list[str] = []
+    stack: list[tuple[str, str]] = []  # (имя тега, открывающий тег целиком)
+    for part in parts:
+        prefix = "".join(opening for _, opening in stack)
+        for m in _TAG.finditer(part):
+            if not m.group(1):
+                stack.append((m.group(2), m.group(0)))
+            elif stack:
+                stack.pop()
+        out.append(prefix + part + "".join(f"</{name}>" for name, _ in reversed(stack)))
+    return out
 
 
 def _tg_len(s: str) -> int:
@@ -23,7 +43,7 @@ def _cut(line: str, limit: int) -> int:
 
 
 def split_text(text: str, limit: int = TG_LIMIT) -> list[str]:
-    """Режет текст на части не длиннее limit по границам строк."""
+    """Режет текст на части не длиннее limit по границам строк; разметка в каждой части остаётся целой."""
     parts: list[str] = []
     cur = ""
     for line in text.split("\n"):
@@ -41,7 +61,7 @@ def split_text(text: str, limit: int = TG_LIMIT) -> list[str]:
             cur = f"{cur}\n{line}" if cur else line
     if cur.strip():
         parts.append(cur)
-    return parts
+    return _rebalance(parts) if len(parts) > 1 else parts
 
 
 async def answer_long(m: Message, text: str, **kwargs) -> None:
