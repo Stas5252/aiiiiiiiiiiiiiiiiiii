@@ -292,7 +292,8 @@ STUBS = {
              'if [ -n "$out" ]; then echo "$body" > "$out"; else echo "$body"; fi\n'),
     "docker": ('case "$1 $2" in\n'
                '  "info "*) exit "${FAKE_DOCKER_INFO_RC:-0}" ;;\n'
-               '  "compose ps") echo "${FAKE_COMPOSE_PS:-}" ;;\n'
+               '  "compose ps") case " $* " in *" -a "*) echo "${FAKE_COMPOSE_STOPPED:-}${FAKE_COMPOSE_PS:-}" ;; '
+               '*) echo "${FAKE_COMPOSE_PS:-}" ;; esac ;;\n'
                '  "compose run") exit "${FAKE_CONFIG_RC:-0}" ;;\n'
                'esac\nexit 0\n'),
     "systemctl": ('case "$1" in\n'
@@ -375,6 +376,42 @@ def test_install_repairs_old_env_with_inline_comments(box, clean_env):
     text = (box.proj / ".env").read_text(encoding="utf-8")
     assert "OWNER_IDS=\n" in text and "PROXY_URL=\n" in text and "PROFILE=Сайты #1 в городе\n" in text
     assert "MINIAPP_TUNNEL" not in text  # свой адрес кабинета задан — туннель не навязываем
+
+
+def test_install_quoted_empty_miniapp_url_still_gets_tunnel(box, clean_env):
+    """MINIAPP_URL="" — это «адрес не задан»: бот видит пустую строку, значит туннель нужен."""
+    (box.proj / ".env").write_text(f'BOT_TOKEN="{TOKEN}"\nMINIAPP_URL=""\nMINIAPP_TUNNEL=\n', encoding="utf-8")
+    assert box.run(LEADHUNTER_ENV_ONLY="1", BOT_TOKEN="").returncode == 0
+    s = Settings(_env_file=box.proj / ".env")
+    assert s.miniapp_url == "" and s.miniapp_tunnel == "cloudflare" and s.bot_token == TOKEN
+
+
+def test_install_switches_existing_copy_to_requested_branch(box):
+    """Первая попытка скачала ветку без кода; повтор с LEADHUNTER_BRANCH должен взять код из названной ветки."""
+    up, start, target = box.tmp / "server", box.tmp / "start", box.tmp / "target"
+    up.mkdir(), start.mkdir()
+    (up / "README.md").write_text("пусто\n")
+    git(up, "init", "-q")
+    git(up, "add", "-A")
+    git(up, "commit", "-qm", "empty main")
+    git(up, "checkout", "-q", "-b", "dev")
+    shutil.copytree(box.proj, up, dirs_exist_ok=True)
+    (up / "leadhunter/__init__.py").write_text("")
+    git(up, "add", "-A")
+    git(up, "commit", "-qm", "code")
+    git(up, "checkout", "-q", "main")
+    shutil.copy(ROOT / "install.sh", start)
+    env = {"LEADHUNTER_REPO": f"file://{up}", "LEADHUNTER_DIR": str(target), "LEADHUNTER_ENV_ONLY": "1"}
+
+    first = box.run(cwd=start, **env)
+    assert first.returncode != 0 and "LEADHUNTER_BRANCH=dev" in first.text
+    second = box.run(cwd=start, LEADHUNTER_BRANCH="dev", **env)
+    assert second.returncode == 0, second.text
+    assert (target / ".env").exists() and (target / "install.sh").exists()
+    upstream = subprocess.run(["git", "rev-parse", "--abbrev-ref", "@{u}"], cwd=target, capture_output=True, text=True)
+    assert upstream.stdout.strip() == "origin/dev"  # иначе update.sh не найдёт, откуда обновляться
+    third = box.run(cwd=start, LEADHUNTER_BRANCH="нет-такой", **env)
+    assert third.returncode != 0 and "нет-такой" in third.text
 
 
 def test_install_without_curl_as_root_in_container(box):
@@ -510,6 +547,21 @@ def test_update_docker_mode(repo):
     res = repo.have("docker").run("update.sh", cwd=repo.inst, FAKE_COMPOSE_PS="abc123")
     assert res.returncode == 0, res.text
     assert repo.called("docker compose up -d") and not repo.called("pip")
+
+
+def test_update_python_install_ignores_stopped_container(repo):
+    """Раньше бот жил в Docker, теперь в Python: остановленный контейнер не поднимаем — иначе ботов станет два."""
+    res = repo.have("docker", "systemctl").run("update.sh", cwd=repo.inst, FAKE_UNIT_EXISTS="1", FAKE_COMPOSE_STOPPED="old1")
+    assert res.returncode == 0, res.text
+    assert repo.called("systemctl restart leadhunter") and not repo.called("docker compose up")
+
+
+def test_update_branch_deleted_on_server(repo):
+    """Ветку, с которой ставили бота, на сервере удалили: не говорим «обновлено», ничего не перезапускаем."""
+    git(repo.up, "branch", "-m", "main", "release")
+    res = repo.have("systemctl").run("update.sh", cwd=repo.inst, FAKE_UNIT_EXISTS="1")
+    assert res.returncode != 0 and "ветк" in res.text.lower() and "LEADHUNTER_BRANCH" in res.text
+    assert not repo.called("pip") and not repo.called("systemctl restart")
 
 
 def test_update_stops_before_restart_on_bad_settings(repo):
