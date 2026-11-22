@@ -73,6 +73,24 @@ ensure_curl() {
 }
 
 # ---------- где лежит проект ----------
+on_branch() { [ "$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" = "$BRANCH" ]; }
+
+switch_branch() { # switch_branch <папка> — переключить скачанную копию на ветку $BRANCH
+    local dir="$1"
+    git -C "$dir" remote set-branches origin "$BRANCH" || return 1
+    if git -C "$dir" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        # Ветка в папке уже есть: свои коммиты в ней не трогаем, только догоняем сервер
+        git -C "$dir" fetch origin "$BRANCH" || return 1
+        git -C "$dir" checkout -q "$BRANCH" || return 1
+        git -C "$dir" branch -q --set-upstream-to="origin/$BRANCH" "$BRANCH" || return 1
+        git -C "$dir" merge -q --ff-only "origin/$BRANCH"
+    else
+        # Папка скачана с другой ветки (и только с ней: --depth 1)
+        git -C "$dir" fetch --depth 1 origin "$BRANCH" || return 1
+        git -C "$dir" checkout -q -b "$BRANCH" --track "origin/$BRANCH"
+    fi
+}
+
 if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DIR/leadhunter" ]; then
     say "Скачиваю LeadHunter"
     if ! command -v git >/dev/null 2>&1; then
@@ -81,13 +99,9 @@ if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DI
         apt_install git ca-certificates || die "Не удалось поставить git."
     fi
     TARGET="${LEADHUNTER_DIR:-$HOME/leadhunter}"
-    if [ -d "$TARGET/.git" ] && [ -n "$BRANCH" ] && [ "$(git -C "$TARGET" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" != "$BRANCH" ]; then
-        # Папка скачана с другой ветки (и только с ней: --depth 1) — переключаем на названную
-        if ! { git -C "$TARGET" remote set-branches origin "$BRANCH" \
-               && git -C "$TARGET" fetch --depth 1 origin "$BRANCH" \
-               && git -C "$TARGET" checkout -q -B "$BRANCH" "origin/$BRANCH"; }; then
-            die "Не удалось переключить папку $TARGET на ветку $BRANCH (причина — выше). Проверьте название ветки и интернет."
-        fi
+    if [ -d "$TARGET/.git" ] && [ -n "$BRANCH" ] && ! on_branch "$TARGET"; then
+        switch_branch "$TARGET" \
+            || die "Не удалось переключить папку $TARGET на ветку $BRANCH (причина — выше). Проверьте название ветки и интернет."
     elif [ -d "$TARGET/.git" ]; then
         git -C "$TARGET" pull --ff-only || warn "Не удалось обновить, использую то, что есть."
     elif [ -n "$BRANCH" ]; then
