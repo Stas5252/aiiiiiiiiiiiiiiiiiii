@@ -17,7 +17,7 @@
 |---|---|---|---|
 | A. Установка и запуск | `docs/modules/A_install.md` | `install.sh`, `update.sh`, `.env.example`, `Dockerfile`, `docker-compose.yml`, `leadhunter/config.py`, `README.md`, `.gitignore`, `.gitattributes` | запланировано |
 | B. Источники и конвейер | `docs/modules/B_leads.md` | `leadhunter/sources/*`, `pipeline.py`, `scoring.py`, `filters.py`, `freshness.py`, `dedup.py`, `geo.py`, `extract.py`, `audit.py`, `llm.py`, `loops.py`, `db.py`, `models.py`, `bot/notify.py` | сделано: находки № 1–24 и K1 закрыты, PR в `dev` из ветки `devin/1795385139-b-leads`. Осталось за другими модулями: № 5 — значение `HH_USER_AGENT` по умолчанию (A, `config.py`) |
-| C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | запланировано |
+| C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | сделано, PR в `dev` из `devin/1795384922-c-bot-security`: V1, V2, V4–V10, V17, V19, M5–M11; тесты — `tests/test_bot_security.py` |
 | D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | запланировано |
 | E. Контент-фабрика | `docs/modules/E_content.md` | `leadhunter/content/*`, `leadhunter/bot/content.py` | запланировано |
 

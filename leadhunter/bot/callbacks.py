@@ -143,7 +143,8 @@ def build_callbacks(deps) -> Router:
             await cq.answer("У этого лида нет чата")
             return
         await db.add_ignored("chat", row["chat_key"], row["chat_title"] or "")
-        await cq.answer(f"Чат «{row['chat_title']}» в игноре. Снять: /unblock {row['chat_key']}", show_alert=True)
+        title = (row["chat_title"] or row["chat_key"])[:60]  # у всплывающего ответа Telegram лимит 200 символов
+        await cq.answer(f"Чат «{title}» в игноре. Снять: /unblock {row['chat_key']}"[:200], show_alert=True)
 
     return router
 
