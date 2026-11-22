@@ -6,12 +6,13 @@ import random
 import re
 import shutil
 import tempfile
+import zlib
 from dataclasses import dataclass
 from functools import lru_cache
 
 from PIL import Image, ImageDraw
 
-from .render import Brand, _mix, _rgb, load_font, wrap_text
+from .render import Brand, _mix, _rgb, load_font, printable, wrap_text
 from .video import PAD, ffmpeg_available, probe_duration
 
 STYLES = ("flat", "chalk")
@@ -21,7 +22,7 @@ ACTIONS = ("idle", "talk", "walk", "jump", "point", "shake", "nod")
 POSITIONS = ("left", "center", "right")
 BGS = ("office", "street", "home", "abstract", "none")
 MIN_DUR, MAX_DUR = 1.5, 8.0
-MAX_SCENES, MAX_CHARS, MAX_SCENE_CHARS = 12, 4, 3
+MAX_SCENES, MAX_CHARS, MAX_SCENE_CHARS = 12, 6, 3
 TRANSITION = 0.3
 WALK_T = 1.1
 CS = 1.05  # масштаб персонажей относительно опорной сетки 1080×1920
@@ -40,6 +41,11 @@ class ToonResult:
 
 
 # ───────────────────────── нормализация сценария ─────────────────────────
+
+def _stable(s: str) -> int:
+    """Постоянное число по id героя: встроенный hash() строк меняется с каждым запуском Python."""
+    return zlib.crc32(str(s).encode("utf-8"))
+
 
 def _color(v, default: str) -> str:
     m = _HEX.match(str(v or "").strip())
@@ -106,6 +112,17 @@ def normalize_script(data: dict) -> dict:
                            "emotion": c.get("emotion") if c.get("emotion") in EMOTIONS else "neutral"})
         if not placed and not line:
             continue
+        if line and line["speaker"] not in chars:
+            # ИИ прислал реплику строкой или назвал незнакомого героя — пусть говорит первый в кадре
+            line["speaker"] = placed[0]["id"] if placed else None
+            if placed and placed[0]["action"] == "idle":
+                placed[0]["action"] = "talk"
+        elif line and line["speaker"] not in {c["id"] for c in placed}:
+            # говорящего забыли поставить в кадр — ставим, иначе реплика уходит «в никуда»
+            if len(placed) >= MAX_SCENE_CHARS:
+                taken.discard(placed.pop()["pos"])
+            free = [p for p in ("center", "left", "right") if p not in taken]
+            placed.append({"id": line["speaker"], "pos": free[0], "action": "talk", "emotion": "neutral"})
         audio = sc.get("audio")
         scenes.append({"bg": sc.get("bg") if sc.get("bg") in BGS else "abstract",
                        "duration": min(MAX_DUR, max(MIN_DUR, _num(sc.get("duration"), 4.0))),
@@ -455,10 +472,10 @@ def _draw_character(img, style, ch, cid, pos, emotion, action, t, cx, fy, k, see
     shape = _GEO[ch["shape"]]
     g = shape
     chalk = style == "chalk"
-    pen = _Pen(img, style, k, seed=int(seed_t * 8) * 31 + hash(cid) % 97)
+    pen = _Pen(img, style, k, seed=int(seed_t * 8) * 31 + _stable(cid) % 97)
     d = pen.d
     d_face = {"left": 1, "right": -1}.get(pos, 0)
-    seed = (hash(cid) % 628) / 100
+    seed = (_stable(cid) % 628) / 100
     start = -(cx + 300 * k) if pos != "right" else (img.size[0] - cx + 300 * k)
     p = _pose(action, t, d_face, start, seed)
     cx = cx + p["dx"] + (3 * k * math.sin(seed_t * 50) if chalk else 0)
@@ -522,7 +539,7 @@ def _draw_character(img, style, ch, cid, pos, emotion, action, t, cx, fy, k, see
     hx = p["hx"] + (d_face * 8 if action != "shake" else 0)
     hcy = btop - g["hh"] / 2 + 28 + p["hy"] + (0 if action != "jump" else 0)
     hbox = (X(hx - g["hw"] / 2), Y(hcy - g["hh"] / 2), X(hx + g["hw"] / 2), Y(hcy + g["hh"] / 2))
-    hair = ink if chalk else _HAIR[hash(cid) % len(_HAIR)]
+    hair = ink if chalk else _HAIR[_stable(cid) % len(_HAIR)]
     if ch["shape"] == "square":
         pen.shape("rect", hbox, skin, r=52 * k, double=True)
         d.rounded_rectangle((hbox[0] + pen.ow, hbox[1] - 6 * k, hbox[2] - pen.ow, Y(hcy - g["hh"] * 0.28)),
@@ -619,9 +636,11 @@ def render_frame(script: dict, scene_index: int, t: float, brand: Brand, size=(1
     w, h = size
     k = min(w / 1080, h / 1920) * CS
     line = sc.get("line")
-    sub = line["text"] if line else ""
-    bkey = (brand.name, brand.handle, brand.primary, brand.accent, brand.text)
-    img = _static_cached(sc["bg"], style, sc.get("caption") or "", sub, bkey, (w, h)).copy()
+    said = printable(line["text"], True) if line else ""  # без эмодзи: в шрифте их нет
+    if not said:
+        line = None
+    bkey = (printable(brand.name), printable(brand.handle), brand.primary, brand.accent, brand.text)
+    img = _static_cached(sc["bg"], style, printable(sc.get("caption") or "", True), said, bkey, (w, h)).copy()
     if sc["bg"] == "abstract":
         _bg_dynamic(img, style, brand, t)
 
@@ -638,7 +657,7 @@ def render_frame(script: dict, scene_index: int, t: float, brand: Brand, size=(1
         # подпись с именем под ногами
         font = load_font(max(8, int(30 * min(w / 1080, h / 1920))), True)
         d = ImageDraw.Draw(img)
-        name = script["characters"][cid]["name"]
+        name = printable(script["characters"][cid]["name"], True) or "·"
         tw = d.textlength(name, font=font)
         pad = 14 * w / 1080
         ty = fy + 28 * w / 1080
@@ -651,7 +670,7 @@ def render_frame(script: dict, scene_index: int, t: float, brand: Brand, size=(1
 
     if line and speaker_xy and t >= max(0.15, walk_end):
         scale = 0.6 + 0.4 * _ease((t - max(0.15, walk_end)) / 0.25)
-        _, _, bw, bh, _, _ = _bubble_layout(line["text"], (w, h))
+        _, _, bw, bh, _, _ = _bubble_layout(said, (w, h))
         cx, top = speaker_xy
         margin = int(w * 0.05)
         bx = min(max(cx - bw / 2, margin), w - margin - bw)
@@ -659,7 +678,7 @@ def render_frame(script: dict, scene_index: int, t: float, brand: Brand, size=(1
         tail_x = int(min(max(cx - bx, bw * 0.15), bw * 0.85))
         by = max(int(h * 0.2), top - 8 - tail_h - bh)
         tail_h = max(int(h * 0.01), int(top - 8 - by - bh))
-        bimg = _bubble_img(line["text"], (w, h), style, tail_x, tail_h)
+        bimg = _bubble_img(said, (w, h), style, tail_x, tail_h)
         ax, ay = bx + tail_x + 2, by + bh + tail_h + 2  # якорь — кончик хвоста
         if scale < 1:
             bimg = bimg.resize((max(1, int(bimg.width * scale)), max(1, int(bimg.height * scale))), Image.BILINEAR)

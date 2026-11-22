@@ -2,6 +2,7 @@
 import html
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,8 +14,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BufferedInputFile, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
                            InputMediaPhoto, Message)
 
-from ..content.factory import API_PLATFORMS, MANUAL_PLATFORMS, ContentFactory, compose_text
-from ..content.store import KINDS, STATUSES, body_json, media_json
+from ..content.factory import API_PLATFORMS, MANUAL_PLATFORMS, VIDEO_KINDS, ContentFactory, compose_text, error_text
+from ..content.generator import NO_AI
+from ..content.manual import MANUAL_HINT, manual_data
+from ..content.publish import truncate_html
+from ..content.render import valid_color
+from ..content.store import KINDS, STATUSES, body_json, errors_json, media_json
 from .guard import Guard
 
 log = logging.getLogger(__name__)
@@ -25,7 +30,7 @@ CONTENT_HELP = """<b>Контент-фабрика</b> — ИИ пишет по�
 /toon тема — мультик с персонажами, рендерится кодом (без нейросети) · /aivideo тема — ИИ-мультик нейросетью Gemini (платно ≈ 0,07 $/сек, биллинг в AI Studio)
 /ideas [N] — идеи из реальных запросов клиентов · /plan — план на неделю (с автопилотом сам предложит черновики)
 /publish текст — опубликовать свой текст (обложка подставится)
-/queue — очередь · /schedule id 2025-01-15 10:00 — точное время · /content — статистика
+/queue — очередь · /schedule id ГГГГ-ММ-ДД ЧЧ:ММ — точное время · /content — статистика
 
 <b>Куда публиковать</b>: /channels · /channel_set telegram @канал · /channel_set vk -123456 · /channel_del vk
 Threads / Instagram / YouTube — ключи через /setup. TikTok и остальное — кнопка «📦 Пакет»: видео + подпись, выкладываете за минуту.
@@ -40,8 +45,48 @@ class ContentState(StatesGroup):
     topic = State()
 
 
+WAIT_MINUTES = 15  # столько бот ждёт ответ на «о чём?» и «пришлите текст»; позже сообщение — уже не ответ
+NEED_AI = "Нужен ИИ — подключите его в /setup"
+
+
 def kind_label(kind: str) -> str:
     return KINDS.get(kind, kind)
+
+
+def fail_text(e: Exception) -> str:
+    """«Не получилось: …» — ошибки ИИ фабрика уже перевела на простой язык, у остальных текст не бывает пустым."""
+    return f"Не получилось: {html.escape(error_text(e, 300))}"
+
+
+def example_time(tz: str) -> str:
+    """Пример для /schedule — завтра в 10:00 (прошедшее время бот не принимает)."""
+    return f"{datetime.now(ZoneInfo(tz)) + timedelta(days=1):%Y-%m-%d} 10:00"
+
+
+def needs_rebuild(row) -> bool:
+    """Медиа нет или оно с изъяном (видео не собралось, вышло без озвучки, слайды не нарисованы)."""
+    m = media_json(row)
+    if m.get("error") or m.get("note"):
+        return True
+    return (row["kind"] in VIDEO_KINDS and not m.get("video")) or (row["kind"] == "carousel" and not m.get("images"))
+
+
+class _ContentRouter(Router):
+    """Роутер контента. При подключении к диспетчеру вешает на него сброс «жду ответ»: любая команда
+    (в том числе чужого роутера, например /leads) отменяет ожидание темы или правки."""
+
+    @Router.parent_router.setter
+    def parent_router(self, router: Router) -> None:
+        Router.parent_router.fset(self, router)
+        router.message.outer_middleware(_drop_waiting)
+
+
+async def _drop_waiting(handler, event, data):
+    state = data.get("state")
+    if state is not None and isinstance(event, Message) and (event.text or "").startswith("/"):
+        if (await state.get_state() or "").startswith("ContentState:"):
+            await state.clear()
+    return await handler(event, data)
 
 
 def keyboard(row) -> InlineKeyboardMarkup:
@@ -50,6 +95,8 @@ def keyboard(row) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🔄 Переписать", callback_data=f"cr:{i}"),
                 InlineKeyboardButton(text="🎲 Вариант", callback_data=f"cv:{i}")]
     tail = [InlineKeyboardButton(text="📦 Пакет", callback_data=f"cpk:{i}")]
+    if row["status"] in ("draft", "scheduled") and needs_rebuild(row):
+        tail.append(InlineKeyboardButton(text="♻️ Пересобрать", callback_data=f"cm:{i}"))
     if row["status"] == "draft":
         rows = [[InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"cp:{i}"),
                  InlineKeyboardButton(text="🗓 Когда", callback_data=f"cs:{i}")], edit_row,
@@ -57,6 +104,9 @@ def keyboard(row) -> InlineKeyboardMarkup:
     elif row["status"] == "scheduled":
         rows = [[InlineKeyboardButton(text="🚀 Сейчас", callback_data=f"cp:{i}"),
                  InlineKeyboardButton(text="❌ Снять с плана", callback_data=f"cu:{i}")], edit_row, tail]
+    elif row["status"] == "published" and errors_json(row):
+        # вышло не везде: повтор отправит только туда, куда не ушло
+        rows = [[InlineKeyboardButton(text="🔁 Доотправить", callback_data=f"cp:{i}")], tail]
     else:
         rows = [tail]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -73,74 +123,88 @@ def schedule_keyboard(item_id: int) -> InlineKeyboardMarkup:
 
 
 def format_card(row, tz: str = "Europe/Moscow") -> str:
-    e = html.escape
-    head = f"{kind_label(row['kind'])} <b>#{row['id']}</b> · {STATUSES.get(row['status'], row['status'])} · {e(row['topic'][:80])}"
+    def e(v) -> str:  # ИИ и старые записи могут дать null или число там, где ждём строку
+        return html.escape("" if v is None else str(v))
+
+    def items(v) -> list[dict]:
+        return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+    head = f"{kind_label(row['kind'])} <b>#{row['id']}</b> · {STATUSES.get(row['status'], row['status'])} · {e((row['topic'] or '')[:80])}"
     lines = [head]
     data = body_json(row) if row["kind"] != "post" else {}
+    if not isinstance(data, dict):
+        data = {}
     if row["title"]:
         lines.append(f"<b>{e(row['title'])}</b>")
     if row["kind"] == "post":
         lines.append(e(row["body"] or ""))
     elif row["kind"] == "carousel":
-        for n, s in enumerate(data.get("slides") or [], 1):
-            lines.append(f"<b>{n}. {e(s.get('title', ''))}</b> — {e(s.get('text', ''))}")
+        for n, s in enumerate(items(data.get("slides")), 1):
+            lines.append(f"<b>{n}. {e(s.get('title'))}</b> — {e(s.get('text'))}")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "toon":
         chars = data.get("characters") or {}
-        names = {k: (v.get("name") or k) for k, v in chars.items()} if isinstance(chars, dict) else {}
-        for n, s in enumerate(data.get("scenes") or [], 1):
-            line = s.get("line") or {}
-            who = names.get(line.get("speaker", ""), line.get("speaker", ""))
-            lines.append(f"{n}. [{e(s.get('bg', ''))}] <b>{e(who)}</b>: {e(line.get('text', ''))}")
+        names = {k: (v.get("name") or k) for k, v in chars.items() if isinstance(v, dict)} if isinstance(chars, dict) else {}
+        for n, s in enumerate(items(data.get("scenes")), 1):
+            line = s.get("line") if isinstance(s.get("line"), dict) else {}
+            who = names.get(line.get("speaker"), line.get("speaker")) or "за кадром"
+            lines.append(f"{n}. [{e(s.get('bg'))}] <b>{e(who)}</b>: {e(line.get('text'))}")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "aivideo":
-        for n, c in enumerate(data.get("clips") or [], 1):
-            lines.append(f"{n}. 🎙 {e(c.get('voice', ''))}\n<i>{e(c.get('prompt', '')[:160])}</i>")
+        for n, c in enumerate(items(data.get("clips")), 1):
+            lines.append(f"{n}. 🎙 {e(c.get('voice'))}\n<i>{e(str(c.get('prompt') or '')[:160])}</i>")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "reel":
         if data.get("hook"):
             lines.append(f"🎣 {e(data['hook'])}")
-        for n, s in enumerate(data.get("scenes") or [], 1):
-            lines.append(f"{n}. [{e(s.get('text', ''))}] {e(s.get('voice', ''))} · {s.get('duration', 3):g}с")
+        for n, s in enumerate(items(data.get("scenes")), 1):
+            dur = s.get("duration") if isinstance(s.get("duration"), (int, float)) else 3
+            lines.append(f"{n}. [{e(s.get('text'))}] {e(s.get('voice'))} · {dur:g}с")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "magnet":
         if data.get("subtitle"):
             lines.append(e(data["subtitle"]))
-        for n, it in enumerate(data.get("items") or [], 1):
-            lines.append(f"{n}. <b>{e(it.get('title', ''))}</b> — {e(it.get('text', ''))}")
-        if data.get("post"):
-            lines.append(f"\n📣 Анонс:\n{e(data['post'])}")
+        for n, it in enumerate(items(data.get("items")), 1):
+            lines.append(f"{n}. <b>{e(it.get('title'))}</b> — {e(it.get('text'))}")
+        post = row["caption"] or data.get("post")  # анонс: правка владельца главнее текста ИИ
+        if post:
+            lines.append(f"\n📣 Анонс:\n{e(post)}")
     if row["hashtags"]:
         lines.append(f"\n{e(row['hashtags'])}")
     m = media_json(row)
     meta = []
     if m.get("video"):
-        meta.append("🎬 видео собрано")
+        meta.append("🎬 видео собрано" + (f" · 🔇 {e(str(m['note'])[:200])}" if m.get("note") else ""))
     elif m.get("error"):
-        meta.append(f"⚠️ видео: {e(m['error'][:120])}")
+        meta.append(f"⚠️ видео не собрано: {e(str(m['error'])[:120])}")
     if m.get("images"):
         n_img = len(m["images"])
         meta.append("🖼 " + ("картинка ИИ" if m.get("ai_cover") else "обложка по шаблону" if n_img == 1 else f"{n_img} слайдов"))
     if row["scheduled_at"] and row["status"] == "scheduled":
         at = datetime.fromisoformat(row["scheduled_at"]).astimezone(ZoneInfo(tz))
         meta.append(f"🗓 {at:%d.%m %H:%M}")
-    if row["published"]:
-        for p in json.loads(row["published"]):
-            meta.append(f"✅ {API_PLATFORMS.get(p['platform'], p['platform'])}" + (f': <a href="{e(p["url"])}">ссылка</a>' if p.get("url") else ""))
+    try:
+        published = items(json.loads(row["published"] or "[]"))
+    except ValueError:
+        published = []
+    for p in published:
+        meta.append(f"✅ {e(API_PLATFORMS.get(p.get('platform'), p.get('platform')))}"
+                    + (f': <a href="{e(p["url"])}">ссылка</a>' if p.get("url") else ""))
+    for p in errors_json(row):
+        meta.append(f"⚠️ не ушло в {e(API_PLATFORMS.get(p.get('platform'), p.get('label')))}: {e(str(p.get('error') or '')[:120])}")
     if row["slug"]:
         meta.append(f"🔗 страница: /lp/{row['slug']}")
     if meta:
         lines.append("\n" + " · ".join(meta))
-    text = "\n".join(lines)
-    return text[:4000] + ("…" if len(text) > 4000 else "")
+    return truncate_html("\n".join(lines), 4000)
 
 
 def build_content_router(deps) -> Router:
-    router = Router()
+    router = _ContentRouter()
     db, guard = deps.db, deps.guard
 
     def factory() -> ContentFactory | None:
@@ -184,7 +248,7 @@ def build_content_router(deps) -> Router:
         try:
             row = await f.create(kind, topic, created_by=Guard.name(m.from_user), data=data)
         except Exception as e:
-            await wait.edit_text(f"Не получилось: {html.escape(str(e)[:300])}")
+            await wait.edit_text(fail_text(e))
             return
         await wait.delete()
         await deliver(row, m.chat.id, m.message_thread_id)
@@ -199,7 +263,7 @@ def build_content_router(deps) -> Router:
                 topic = (command.args or "").strip()
                 if not topic:
                     await state.set_state(ContentState.topic)
-                    await state.update_data(kind=kind)
+                    await state.update_data(kind=kind, asked_at=time.time())
                     await m.answer(f"{kind_label(kind)} — о чём? Напишите тему одним сообщением.")
                     return
                 await _run(m, kind, topic)
@@ -208,46 +272,28 @@ def build_content_router(deps) -> Router:
     async def _run(m: Message, kind: str, topic: str):
         f = factory()
         if kind == "aivideo" and not (f.video_ai and f.video_ai.video_enabled):
-            await m.answer("ИИ-мультики генерирует нейросеть Gemini Omni — задайте GEMINI_API_KEY в .env (aistudio.google.com). "
+            await m.answer("ИИ-мультики рисует нейросеть Gemini Omni — подключите ключ Gemini в /setup (aistudio.google.com). "
                            "Без него есть /toon — мультик с персонажами, который рисуется кодом.")
             return
         if f.gen.available:
             await make(m, kind, topic)
             return
-        # Без ИИ: слайды/сцены через «|», первый кусок — заголовок
-        parts = [p.strip() for p in topic.split("|") if p.strip()]
-        if kind == "carousel" and len(parts) >= 2:
-            data = {"title": parts[0], "slides": [{"title": parts[0], "text": ""}] + [{"title": "", "text": p} for p in parts[1:]],
-                    "caption": parts[0], "hashtags": []}
-            await make(m, kind, parts[0], data=data)
-        elif kind == "reel" and len(parts) >= 2:
-            data = {"title": parts[0], "scenes": [{"text": p, "voice": "", "duration": 3} for p in parts], "caption": parts[0], "hashtags": []}
-            await make(m, kind, parts[0], data=data)
-        elif kind == "toon" and len(parts) >= 2:
-            # Без ИИ: «Название | Имя: реплика | Имя: реплика» — два первых имени становятся персонажами слева и справа
-            chars, scenes = {}, []
-            for p in parts[1:]:
-                who, _, text = p.partition(":")
-                who, text = (who.strip() or "Герой"), (text.strip() or p.strip())
-                chars.setdefault(who, {"name": who, "color": ["#F2C14E", "#6FB9F0", "#8EEE98"][len(chars) % 3], "shape": "round"})
-                cid = who
-                ids = list(chars)
-                scenes.append({"bg": "office", "duration": 3.5,
-                               "characters": [{"id": c, "pos": "left" if i == 0 else "right" if i == 1 else "center",
-                                               "emotion": "happy" if c == cid else "neutral", "action": "talk" if c == cid else "idle"}
-                                              for i, c in enumerate(ids[:3])],
-                               "line": {"speaker": cid, "text": text}})
-            data = {"title": parts[0], "style": "flat", "characters": chars, "scenes": scenes, "caption": parts[0], "hashtags": []}
-            await make(m, kind, parts[0], data=data)
+        # Без ИИ: слайды / сцены / реплики через «|», первый кусок — заголовок (то же умеет кабинет)
+        data = manual_data(kind, topic)
+        if data:
+            await make(m, kind, data["title"], data=data)
         else:
-            await m.answer("ИИ не подключён (GEMINI_API_KEY или OPENAI_API_KEY). Без него можно: /publish текст, "
-                           "/carousel Заголовок | слайд 1 | слайд 2, /reel фраза 1 | фраза 2, "
-                           "/toon Название | Директор: реплика | Разработчик: реплика")
+            await m.answer(f"{NO_AI} {MANUAL_HINT}")
+
+    def expired(data: dict) -> bool:
+        return time.time() - float(data.get("asked_at") or 0) > WAIT_MINUTES * 60
 
     @router.message(ContentState.topic, F.text, ~F.text.startswith("/"))
     async def topic_reply(m: Message, state: FSMContext):
         data = await state.get_data()
         await state.clear()
+        if expired(data):
+            return  # вопрос «о чём?» был давно — это сообщение уже не ответ на него
         if await ready(m):
             await _run(m, data.get("kind", "post"), m.text.strip())
 
@@ -269,7 +315,7 @@ def build_content_router(deps) -> Router:
             return
         f = factory()
         if not f.gen.available:
-            await m.answer("Идеи генерирует ИИ — задайте OPENAI_API_KEY.")
+            await m.answer("Идеи генерирует ИИ — подключите его в /setup (подойдёт ключ Gemini или OpenAI).")
             return
         is_plan = m.text.lstrip("/").startswith("plan")
         n = int(command.args) if command.args and command.args.strip().isdigit() else 7
@@ -277,7 +323,7 @@ def build_content_router(deps) -> Router:
         try:
             data = await f.gen.generate("ideas", "", n=min(n, 10))
         except Exception as e:
-            await wait.edit_text(f"Не получилось: {html.escape(str(e)[:300])}")
+            await wait.edit_text(fail_text(e))
             return
         tz = ZoneInfo(deps.tz)
         hour = deps.extra.get("content_hour", 10)
@@ -337,13 +383,25 @@ def build_content_router(deps) -> Router:
             item_id = int(parts[0])
             at = datetime.strptime(" ".join(parts[1:3]), "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo(deps.tz))
         except (ValueError, IndexError):
-            await m.answer("Формат: /schedule id 2025-01-15 10:00")
+            await m.answer(f"Формат: /schedule id {example_time(deps.tz)}")
             return
         row = await factory().store.get(item_id)
         if not row:
             await m.answer("Нет такого")
             return
-        await factory().store.schedule(item_id, at)
+        if row["status"] not in ("draft", "scheduled") or row["kind"] == "idea":
+            why = {"published": "уже опубликован — второй раз в канал не отправляю",
+                   "publishing": "прямо сейчас публикуется", "rejected": "удалён"}.get(row["status"], "это идея, а не готовый материал")
+            await m.answer(f"#{item_id} {why}. В расписание можно поставить только черновик. Нужен такой же пост — "
+                           f"сделайте вариант: /show {item_id} → «🎲 Вариант».")
+            return
+        if at <= datetime.now(ZoneInfo(deps.tz)):
+            await m.answer(f"Это время уже прошло ({at:%d.%m.%Y %H:%M}). Укажите будущее, например: "
+                           f"/schedule {item_id} {example_time(deps.tz)}")
+            return
+        if not await factory().store.schedule(item_id, at):
+            await m.answer(f"#{item_id} не получилось поставить в расписание — откройте карточку: /show {item_id}")
+            return
         await m.answer(f"#{item_id} выйдет {at:%d.%m %H:%M}")
 
     @router.message(Command("content"))
@@ -439,10 +497,15 @@ def build_content_router(deps) -> Router:
         data = {"name": parts[0]}
         if len(parts) > 1:
             data["handle"] = parts[1]
-        if len(parts) > 2 and parts[2].startswith("#"):
-            data["primary"] = parts[2]
-        if len(parts) > 3 and parts[3].startswith("#"):
-            data["accent"] = parts[3]
+        for key, value in zip(("primary", "accent"), parts[2:4]):
+            if not value:
+                continue
+            if not valid_color(value):
+                await m.answer(f"Не понял цвет «{html.escape(value[:20])}». Цвет пишется так: решётка и 6 знаков, например #141420 "
+                               "(подобрать: наберите в поиске «color picker»). Ничего не менял.\n"
+                               "Пример: /brand Студия Пиксель | @pixel_studio | #141420 | #7C5CFF")
+                return
+            data[key] = value
         await db.set_setting("brand", json.dumps(data, ensure_ascii=False))
         await m.answer("Сохранил — новые слайды и обложки будут с этим брендом.")
 
@@ -468,13 +531,22 @@ def build_content_router(deps) -> Router:
         data = await state.get_data()
         await state.clear()
         f = factory()
-        row = await f.store.get(data["item_id"]) if f else None
+        row = await f.store.get(data["item_id"]) if f and not expired(data) else None
         if not row:
+            return
+        if row["status"] not in ("draft", "scheduled"):
+            await m.answer(f"#{row['id']} уже не черновик ({STATUSES.get(row['status'], row['status'])}) — текст не меняю.")
             return
         new = m.text.strip()
         if row["kind"] == "post":
             await f.store.add_edit(row["id"], "post", row["body"] or "", new)
             await f.store.update(row["id"], body=new)
+        elif row["kind"] == "magnet":
+            # анонс лид-магнита: правим и подпись, и текст внутри материала — в канал уйдёт именно правка
+            body = body_json(row)
+            body = body if isinstance(body, dict) else {}
+            await f.store.add_edit(row["id"], "magnet", row["caption"] or body.get("post") or "", new)
+            await f.store.update(row["id"], caption=new, body=json.dumps({**body, "post": new}, ensure_ascii=False))
         else:
             await f.store.add_edit(row["id"], row["kind"], row["caption"] or "", new)
             await f.store.update(row["id"], caption=new)
@@ -486,7 +558,7 @@ def build_content_router(deps) -> Router:
         data = await state.get_data()
         await state.clear()
         f = factory()
-        row = await f.store.get(data["item_id"]) if f else None
+        row = await f.store.get(data["item_id"]) if f and not expired(data) else None
         if not row:
             return
         wait = await m.answer("Переписываю…")
@@ -497,7 +569,7 @@ def build_content_router(deps) -> Router:
                                    f"[указание: {m.text.strip()}] " + (new.get("body") or new.get("caption") or json.dumps(new, ensure_ascii=False)[:800]))
             await f.replace_data(row["id"], new)
         except Exception as e:
-            await wait.edit_text(f"Не получилось: {html.escape(str(e)[:300])}")
+            await wait.edit_text(fail_text(e))
             return
         await wait.delete()
         await deliver(await f.store.get(row["id"]), m.chat.id, m.message_thread_id)
@@ -525,9 +597,22 @@ def build_content_router(deps) -> Router:
     async def publish_now(cq: CallbackQuery):
         if not await ok(cq) or not (row := await get(cq)):
             return
+        # старая карточка или второй тап: вышедшее не отправляем заново (кроме площадок, куда в прошлый раз не ушло)
+        if row["status"] == "publishing":
+            await cq.answer("Уже публикую — подождите результат", show_alert=True)
+            return
+        if row["status"] == "rejected" or (row["status"] == "published" and not errors_json(row)):
+            await refresh(cq, row)
+            await cq.answer("Уже опубликовано — второй раз не отправляю" if row["status"] == "published" else "Материал удалён",
+                            show_alert=True)
+            return
         pubs = await deps.extra["publishers"]() if deps.extra.get("publishers") else []
         if not pubs:
             await cq.answer("Площадки не настроены: /channels", show_alert=True)
+            return
+        problem = factory().not_ready(row)
+        if problem:
+            await cq.answer(f"Не публикую: {problem}"[:190], show_alert=True)
             return
         await cq.answer("Публикую…")
         out = await factory().publish(row, pubs)
@@ -537,7 +622,27 @@ def build_content_router(deps) -> Router:
         notes = [r.note for r in out.results if getattr(r, "note", "")]
         if out.errors or notes:
             msg += ("\n" if msg else "") + "⚠️ " + "\n⚠️ ".join(out.errors + notes)
+        if out.results and errors_json(row):
+            msg += "\nКуда не ушло — нажмите «🔁 Доотправить», когда почините: отправлю только туда."
         await cq.message.reply(html.escape(msg) if msg else "Никуда не ушло", disable_web_page_preview=True)
+
+    @router.callback_query(F.data.startswith("cm:"))
+    async def rebuild(cq: CallbackQuery):
+        """Пересобрать медиа (видео не собралось, вышло без озвучки, сменили бренд)."""
+        if not await ok(cq) or not (row := await get(cq)):
+            return
+        if row["status"] not in ("draft", "scheduled"):
+            await cq.answer("Пересобрать можно только черновик", show_alert=True)
+            return
+        await cq.answer("Пересобираю…")
+        try:
+            media = await factory().render(row["id"])
+        except Exception as e:
+            await cq.message.reply(fail_text(e))
+            return
+        if media.get("error"):
+            await cq.message.reply(f"Не получилось: {html.escape(str(media['error']))}")
+        await deliver(await factory().store.get(row["id"]), cq.message.chat.id, cq.message.message_thread_id)
 
     @router.callback_query(F.data.startswith("cs:"))
     async def schedule_cb(cq: CallbackQuery):
@@ -549,16 +654,19 @@ def build_content_router(deps) -> Router:
                 await cq.message.edit_reply_markup(reply_markup=schedule_keyboard(row["id"]))
             except TelegramBadRequest:
                 pass
-            await cq.answer("Точное время: /schedule id 2025-01-15 10:00")
+            await cq.answer(f"Точное время: /schedule {row['id']} {example_time(deps.tz)}")
             return
         days, hour = int(parts[2]), int(parts[3])
         tz = ZoneInfo(deps.tz)
         at = (datetime.now(tz) + timedelta(days=days)).replace(hour=hour, minute=0, second=0, microsecond=0)
         if at <= datetime.now(tz):
             at += timedelta(days=1)
-        await factory().store.schedule(row["id"], at)
+        done = await factory().store.schedule(row["id"], at)
         await refresh(cq, await factory().store.get(row["id"]))
-        await cq.answer(f"Выйдет {at:%d.%m %H:%M}")
+        if done:
+            await cq.answer(f"Выйдет {at:%d.%m %H:%M}")
+        else:
+            await cq.answer("В расписание можно поставить только черновик — этот уже опубликован или удалён", show_alert=True)
 
     @router.callback_query(F.data.startswith("cb:"))
     async def back(cq: CallbackQuery):
@@ -570,15 +678,18 @@ def build_content_router(deps) -> Router:
     async def unschedule(cq: CallbackQuery):
         if not await ok(cq) or not (row := await get(cq)):
             return
-        await factory().store.schedule(row["id"], None)
+        done = await factory().store.schedule(row["id"], None)
         await refresh(cq, await factory().store.get(row["id"]))
-        await cq.answer("Снял с плана — остаётся черновиком")
+        await cq.answer("Снял с плана — остаётся черновиком" if done else "Уже не в плане")
 
     @router.callback_query(F.data.startswith("cx:"))
     async def reject(cq: CallbackQuery):
         if not await ok(cq) or not (row := await get(cq)):
             return
-        await factory().store.update(row["id"], status="rejected")
+        if not await factory().store.reject(row["id"]):
+            await refresh(cq, await factory().store.get(row["id"]))
+            await cq.answer("Удалить можно только черновик — этот уже опубликован или публикуется", show_alert=True)
+            return
         try:
             await cq.message.edit_text(f"🗑 #{row['id']} удалено", reply_markup=None)
         except TelegramBadRequest:
@@ -589,9 +700,12 @@ def build_content_router(deps) -> Router:
     async def edit_start(cq: CallbackQuery, state: FSMContext):
         if not await ok(cq) or not (row := await get(cq)):
             return
+        if row["status"] not in ("draft", "scheduled"):
+            await cq.answer("Править можно только черновик", show_alert=True)
+            return
         await state.set_state(ContentState.edit)
-        await state.update_data(item_id=row["id"])
-        what = "текст поста" if row["kind"] == "post" else "подпись"
+        await state.update_data(item_id=row["id"], asked_at=time.time())
+        what = "текст поста" if row["kind"] == "post" else "текст анонса" if row["kind"] == "magnet" else "подпись"
         await cq.message.reply(f"Пришлите исправленный {what} #{row['id']} одним сообщением — я заменю и запомню стиль правок.")
         await cq.answer()
 
@@ -600,10 +714,10 @@ def build_content_router(deps) -> Router:
         if not await ok(cq) or not (row := await get(cq)):
             return
         if not factory().gen.available:
-            await cq.answer("Нужен ИИ (OPENAI_API_KEY)", show_alert=True)
+            await cq.answer(NEED_AI, show_alert=True)
             return
         await state.set_state(ContentState.rewrite)
-        await state.update_data(item_id=row["id"])
+        await state.update_data(item_id=row["id"], asked_at=time.time())
         await cq.message.reply(f"Что поменять в #{row['id']}? Например: «короче, на ты, добавь пример с ценой».")
         await cq.answer()
 
@@ -612,13 +726,13 @@ def build_content_router(deps) -> Router:
         if not await ok(cq) or not (row := await get(cq)):
             return
         if not factory().gen.available:
-            await cq.answer("Нужен ИИ (OPENAI_API_KEY)", show_alert=True)
+            await cq.answer(NEED_AI, show_alert=True)
             return
         await cq.answer("Пишу другой вариант…")
         try:
             new = await factory().create(row["kind"], row["topic"], created_by=Guard.name(cq.from_user), parent_id=row["id"])
         except Exception as e:
-            await cq.message.reply(f"Не получилось: {html.escape(str(e)[:300])}")
+            await cq.message.reply(fail_text(e))
             return
         await deliver(new, cq.message.chat.id, cq.message.message_thread_id)
 
@@ -653,7 +767,7 @@ def build_content_router(deps) -> Router:
             new = await factory().create(kind, row["topic"], created_by=Guard.name(cq.from_user), parent_id=row["id"])
             await factory().store.update(row["id"], status="published")  # идея использована
         except Exception as e:
-            await cq.message.reply(f"Не получилось: {html.escape(str(e)[:300])}")
+            await cq.message.reply(fail_text(e))
             return
         await deliver(new, cq.message.chat.id, cq.message.message_thread_id)
 

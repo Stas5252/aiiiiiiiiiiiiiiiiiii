@@ -61,7 +61,7 @@ def test_normalize_drops_bad_scenes_and_limits():
            "scenes": [{"characters": [{"id": "ghost"}]}, {"caption": "только заголовок"}, "мусор"] +
                      [{"characters": [{"id": "c0"}]} for _ in range(20)]}
     s = normalize_script(raw)
-    assert s["style"] == "flat" and len(s["characters"]) == 4 and len(s["scenes"]) == 12
+    assert s["style"] == "flat" and len(s["characters"]) == 6 and len(s["scenes"]) == 12  # героев не больше 6
     assert all(c["color"].startswith("#") and len(c["color"]) == 7 for c in s["characters"].values())
 
 

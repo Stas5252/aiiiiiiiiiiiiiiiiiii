@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS landing_leads (
 
 KINDS = {"post": "✍️ Пост", "carousel": "🎠 Карусель", "reel": "🎬 Видео", "toon": "🎨 Мультик (код)", "aivideo": "🤖 ИИ-мультик",
          "magnet": "🧲 Лид-магнит", "idea": "💡 Идея"}
-STATUSES = {"draft": "черновик", "scheduled": "запланировано", "published": "опубликовано", "rejected": "отклонено"}
+STATUSES = {"draft": "черновик", "scheduled": "запланировано", "publishing": "публикуется",
+            "published": "опубликовано", "rejected": "отклонено"}
+OPEN_STATUSES = ("draft", "scheduled")  # только из них материал можно публиковать и ставить в расписание
+STUCK_MINUTES = 10  # дольше одна площадка не публикуется (таймаут 5 минут) — значит, процесс умер
+INTERRUPTED = {"platform": "", "label": "остальные площадки", "error": "публикация прервалась"}
 
 
 def _now() -> str:
@@ -55,7 +59,27 @@ class ContentStore:
 
     async def init(self) -> None:
         await self.conn.executescript(SCHEMA)
+        cur = await self.conn.execute("PRAGMA table_info(content_items)")
+        if "publish_errors" not in {r[1] for r in await cur.fetchall()}:
+            # JSON [{platform, label, error}] — площадки, куда материал не ушёл при последней публикации
+            await self.conn.execute("ALTER TABLE content_items ADD COLUMN publish_errors TEXT")
+        # идеи плана не публикуются сами: раньше им ставился статус scheduled
+        await self.conn.execute("UPDATE content_items SET status = 'draft' WHERE kind = 'idea' AND status = 'scheduled'")
         await self.conn.commit()
+        await self.release_stuck()
+
+    async def release_stuck(self, minutes: float = STUCK_MINUTES) -> int:
+        """Материал завис в «публикуется» (бот упал или перезапущен посреди публикации) — снимаем захват.
+        Что успело выйти, записано в published: такой материал считается опубликованным, а остальные площадки
+        владелец доотправит кнопкой. Ничего не вышло — обратно в черновики (сам второй раз не уйдёт)."""
+        before = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        cur = await self.conn.execute(
+            "UPDATE content_items SET scheduled_at = NULL,"
+            " status = CASE WHEN COALESCE(published, '') IN ('', '[]') THEN 'draft' ELSE 'published' END,"
+            " publish_errors = CASE WHEN COALESCE(published, '') IN ('', '[]') THEN NULL ELSE ? END"
+            " WHERE status = 'publishing' AND updated_at < ?", (json.dumps([INTERRUPTED], ensure_ascii=False), before))
+        await self.conn.commit()
+        return cur.rowcount
 
     # --- материалы ---
     async def add(self, kind: str, topic: str, *, title: str = "", body: str = "", caption: str = "",
@@ -68,7 +92,7 @@ class ContentStore:
             " slug, created_by, scheduled_at, platforms, status, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (kind, topic, title, body, caption, " ".join(hashtags or []), image_prompt, lead_id, parent_id, slug,
-             created_by, scheduled_at, platforms, "scheduled" if scheduled_at else "draft", _now(), _now()))
+             created_by, scheduled_at, platforms, "scheduled" if scheduled_at and kind != "idea" else "draft", _now(), _now()))
         await self.conn.commit()
         return cur.lastrowid
 
@@ -85,7 +109,7 @@ class ContentStore:
             return
         if "hashtags" in fields and isinstance(fields["hashtags"], list):
             fields["hashtags"] = " ".join(fields["hashtags"])
-        for k in ("media", "published"):
+        for k in ("media", "published", "publish_errors"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k], ensure_ascii=False)
         fields["updated_at"] = _now()
@@ -96,18 +120,60 @@ class ContentStore:
     async def set_message(self, item_id: int, chat_id: int, msg_id: int) -> None:
         await self.update(item_id, msg_chat_id=chat_id, msg_id=msg_id)
 
-    async def schedule(self, item_id: int, at: datetime | None) -> None:
-        if at is None:
-            await self.update(item_id, status="draft", scheduled_at=None)
-        else:
-            await self.update(item_id, status="scheduled", scheduled_at=at.astimezone(timezone.utc).isoformat())
+    async def schedule(self, item_id: int, at: datetime | None) -> bool:
+        """В расписание (или обратно в черновики) — только неопубликованное, не удалённое и на будущее время.
+        False — ничего не изменилось."""
+        if at is not None and at.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            return False
+        status, when = ("draft", None) if at is None else ("scheduled", at.astimezone(timezone.utc).isoformat())
+        cur = await self.conn.execute(
+            "UPDATE content_items SET status = ?, scheduled_at = ?, updated_at = ? WHERE id = ? AND kind != 'idea'"
+            " AND status IN ('draft', 'scheduled')", (status, when, _now(), item_id))
+        await self.conn.commit()
+        return cur.rowcount == 1
+
+    async def reject(self, item_id: int) -> bool:
+        """Удалить можно только черновик или запланированное: вышедшее и то, что сейчас публикуется, не трогаем."""
+        cur = await self.conn.execute(
+            "UPDATE content_items SET status = 'rejected', scheduled_at = NULL, updated_at = ? WHERE id = ?"
+            " AND (status IN ('draft', 'scheduled') OR kind = 'idea')", (_now(), item_id))
+        await self.conn.commit()
+        return cur.rowcount == 1
+
+    async def claim(self, item_id: int) -> bool:
+        """Атомарно забрать материал в публикацию: из двух одновременных попыток пройдёт одна.
+        Берётся черновик, запланированное или опубликованное частично (есть площадки, куда не ушло)."""
+        cur = await self.conn.execute(
+            "UPDATE content_items SET status = 'publishing', updated_at = ? WHERE id = ? AND kind != 'idea' AND"
+            " (status IN ('draft', 'scheduled')"
+            "  OR (status = 'published' AND COALESCE(publish_errors, '') NOT IN ('', '[]')))", (_now(), item_id))
+        await self.conn.commit()
+        return cur.rowcount == 1
+
+    async def finish_publish(self, item_id: int, status: str, failed: list[dict]) -> None:
+        """Снять захват: итоговый статус и площадки, куда не ушло."""
+        fields = {"status": status, "publish_errors": failed or None}
+        if status == "published":
+            fields["scheduled_at"] = None
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        await self.conn.execute(
+            f"UPDATE content_items SET {cols}, updated_at = ? WHERE id = ? AND status = 'publishing'",
+            (*(json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v for v in fields.values()), _now(), item_id))
+        await self.conn.commit()
+
+    async def add_published(self, item_id: int, result: dict) -> None:
+        """Записать площадку сразу после успеха — чтобы повтор или перезапуск не отправили туда второй раз."""
+        row = await self.get(item_id)
+        done = json.loads(row["published"] or "[]") + [result]
+        await self.update(item_id, published=done, published_at=_now())
 
     async def mark_published(self, item_id: int, results: list[dict]) -> None:
         await self.update(item_id, status="published", published_at=_now(), published=results)
 
-    async def due(self) -> list[aiosqlite.Row]:
+    async def due(self, limit: int | None = None) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(
-            "SELECT * FROM content_items WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at", (_now(),))
+            "SELECT * FROM content_items WHERE status = 'scheduled' AND kind != 'idea' AND scheduled_at <= ?"
+            " ORDER BY scheduled_at, id LIMIT ?", (_now(), limit if limit else -1))
         return list(await cur.fetchall())
 
     async def queue(self, limit: int = 30) -> list[aiosqlite.Row]:
@@ -190,6 +256,19 @@ def body_json(row) -> dict | list:
         return json.loads(row["body"] or "")
     except (ValueError, TypeError):
         return {}
+
+
+def errors_json(row) -> list[dict]:
+    """Площадки, куда материал не ушёл при последней публикации: [{platform, label, error}]."""
+    try:
+        raw = row["publish_errors"]
+    except (KeyError, IndexError):
+        return []
+    try:
+        data = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        return []
+    return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
 
 
 def media_json(row) -> dict:

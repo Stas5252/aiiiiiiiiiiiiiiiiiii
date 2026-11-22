@@ -2,8 +2,10 @@
 
 Всё «обучение» — в промпте: профиль студии, тон голоса (/voice), последние правки владельца («было → стало»),
 уже опубликованные посты как образцы стиля и боли клиентов из найденных лидов."""
+import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from ..db import Database
@@ -69,6 +71,70 @@ REWRITE = """Ниже материал ({kind}) в JSON. Перепиши его
 {data}"""
 
 
+NO_AI = "ИИ не подключён. Подключите его в /setup — подойдёт ключ Gemini или OpenAI."
+BAD_FORMAT = "ИИ ответил не по формату. Попробуйте ещё раз, а если повторится — смените модель в /setup."
+
+
+class ContentError(ValueError):
+    """Ошибка с готовым текстом для владельца — показываем как есть."""
+
+
+def ai_error_text(e: BaseException) -> str:
+    """Ошибка запроса к ИИ простыми словами вместо текста исключения Python."""
+    import httpx
+
+    if isinstance(e, ContentError):
+        return str(e)
+    if isinstance(e, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+        return "ИИ не ответил вовремя. Попробуйте ещё раз через минуту."
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        if code in (401, 403):
+            return "ИИ не принял ключ. Проверьте ключ в /setup."
+        if code == 429:
+            return "У ИИ закончился лимит запросов. Подождите несколько минут или проверьте тариф."
+        if code >= 500:
+            return "Сервис ИИ сейчас недоступен. Попробуйте позже."
+        return f"ИИ ответил ошибкой {code}. Проверьте ключ и модель в /setup."
+    if isinstance(e, httpx.HTTPError):
+        return "Нет связи с ИИ. Проверьте интернет и адрес сервиса в /setup."
+    if isinstance(e, RuntimeError) and "ИИ" in str(e):
+        return str(e)[:200].capitalize() + "."  # наш собственный текст, например про лимит вызовов в час
+    return f"ИИ не ответил ({type(e).__name__}). Попробуйте ещё раз."
+
+
+def _s(v, sep: str = "\n") -> str:
+    """Строка из чего угодно: null → пусто (а не слово «None»), список → строки через перевод."""
+    if v is None or isinstance(v, (bool, dict)):
+        return ""
+    if isinstance(v, (list, tuple)):
+        return sep.join(x for x in (_s(i, sep) for i in v) if x)
+    return str(v).strip()
+
+
+def _list(v) -> list:
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def _pair(v) -> dict:
+    """Слайд или пункт: {"title", "text"}; строка считается текстом."""
+    if isinstance(v, dict):
+        return {"title": _s(v.get("title")), "text": _s(v.get("text"))}
+    return {"title": "", "text": _s(v)}
+
+
+def _tags(v) -> list[str]:
+    """Хэштеги списком: принимает и список, и строку через пробелы или запятые; мусор (null, числа) отбрасывает."""
+    raw = [v] if isinstance(v, str) else [x for x in _list(v) if isinstance(x, str)]
+    out: list[str] = []
+    for chunk in raw:
+        for t in re.split(r"[\s,;]+", chunk):
+            t = t.strip("#").strip()
+            if t and f"#{t}" not in out:
+                out.append(f"#{t}")
+    return out[:10]
+
+
 class ContentGenerator:
     def __init__(self, llm: LLMClassifier | None, store: ContentStore, db: Database, default_profile: str):
         self.llm = llm
@@ -121,68 +187,118 @@ class ContentGenerator:
         if await self.db.get_setting("format_" + kind, "1") == "0":
             raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
-            raise RuntimeError("ИИ не подключён — задайте OPENAI_API_KEY в .env")
+            raise ContentError(NO_AI)
         if kind not in SCHEMAS:
             raise ValueError(f"неизвестный формат {kind}")
         system = await self._system(kind)
         user = SCHEMAS[kind].format(topic=topic, n=n, platform=f" для {platform}" if platform else "")
-        data = await self.llm.complete_json(system, user, temperature=0.8)
-        return self._clean(kind, data)
+        return await self._ask(kind, system, user, 0.8)
 
     async def rewrite(self, kind: str, data: dict, instruction: str) -> dict:
         if await self.db.get_setting("format_" + kind, "1") == "0":
             raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
-            raise RuntimeError("ИИ не подключён — задайте OPENAI_API_KEY в .env")
+            raise ContentError(NO_AI)
         system = await self._system(kind)
         user = REWRITE.format(kind=kind, instruction=instruction, data=json.dumps(data, ensure_ascii=False))
-        return self._clean(kind, await self.llm.complete_json(system, user, temperature=0.7))
+        return await self._ask(kind, system, user, 0.7)
+
+    async def _ask(self, kind: str, system: str, user: str, temperature: float) -> dict:
+        """Запрос к ИИ с одним повтором, если ответ не разобрался или в нём нет содержимого."""
+        problem: Exception | None = None
+        for attempt in range(2):
+            try:
+                data = await self.llm.complete_json(system, user, temperature=temperature)
+            except (ValueError, AttributeError, KeyError, IndexError, TypeError) as e:
+                # не JSON, пустой content, нет choices — модель ответила, но не по формату
+                log.warning("ИИ ответил не по формату (%s, попытка %s): %r", kind, attempt + 1, e)
+                problem = ContentError(BAD_FORMAT)
+                continue
+            except Exception as e:
+                raise ContentError(ai_error_text(e)) from e
+            try:
+                return self._clean(kind, data)
+            except ContentError as e:
+                log.warning("ИИ вернул негодный материал (%s, попытка %s): %s", kind, attempt + 1, e)
+                problem = e
+        raise problem or ContentError(BAD_FORMAT)
+
+    def clean(self, kind: str, data) -> dict:
+        return self._clean(kind, data)
 
     @staticmethod
-    def _clean(kind: str, data: dict) -> dict:
-        """ИИ иногда возвращает строку вместо списка или лишние ключи — приводим к ожидаемой форме."""
-        tags = data.get("hashtags") or []
-        if isinstance(tags, str):
-            tags = tags.split()
-        data["hashtags"] = [t if t.startswith("#") else f"#{t}" for t in (str(x).strip() for x in tags) if t][:10]
+    def _clean(kind: str, data) -> dict:
+        """ИИ (и ручной ввод) присылают что угодно: null, список вместо строки, строку вместо списка.
+        Приводим к ожидаемой форме, а материал без содержимого не пропускаем — пустой черновик никому не нужен."""
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, dict) or not data:
+            raise ContentError(BAD_FORMAT)
+        data = dict(data)
+        data["hashtags"] = _tags(data.get("hashtags"))
+        for key in ("title", "caption", "image_prompt", "subtitle", "cta", "post", "hook"):
+            if key in data or key in ("title", "caption", "image_prompt"):
+                data[key] = _s(data.get(key))
+        if kind == "post":
+            data["body"] = _s(data.get("body"), "\n\n")  # абзацы списком склеиваем через пустую строку
+            if not data["body"]:
+                raise ContentError("Пост получился пустым: в нём нет текста. Попробуйте ещё раз.")
         if kind == "carousel":
-            data["slides"] = [{"title": str(s.get("title", "")), "text": str(s.get("text", ""))}
-                              for s in data.get("slides") or [] if isinstance(s, dict)][:10]
+            data["slides"] = [s for s in (_pair(x) for x in _list(data.get("slides"))) if s["title"] or s["text"]][:10]
+            if not data["slides"]:
+                raise ContentError("В карусели нет ни одного слайда. Попробуйте ещё раз.")
         if kind == "reel":
             scenes = []
-            for s in data.get("scenes") or []:
+            for s in _list(data.get("scenes")):
+                if isinstance(s, str):
+                    s = {"text": s}
                 if not isinstance(s, dict):
                     continue
                 try:
                     dur = float(s.get("duration") or 3)
                 except (TypeError, ValueError):
                     dur = 3.0
-                scenes.append({"text": str(s.get("text", "")), "voice": str(s.get("voice", "")),
-                               "duration": max(1.5, min(8.0, dur))})
+                scene = {"text": _s(s.get("text")), "voice": _s(s.get("voice")), "duration": max(1.5, min(8.0, dur))}
+                if scene["text"] or scene["voice"]:
+                    scenes.append(scene)
             data["scenes"] = scenes[:10]
+            if not scenes:
+                raise ContentError("В сценарии видео нет ни одной сцены. Попробуйте ещё раз.")
         if kind == "magnet":
-            data["items"] = [{"title": str(i.get("title", "")), "text": str(i.get("text", ""))}
-                             for i in data.get("items") or [] if isinstance(i, dict)][:15]
+            data["items"] = [i for i in (_pair(x) for x in _list(data.get("items"))) if i["title"] or i["text"]][:15]
+            if not data["items"]:
+                raise ContentError("В лид-магните нет ни одного пункта. Попробуйте ещё раз.")
         if kind == "ideas":
-            data["ideas"] = [i for i in data.get("ideas") or [] if isinstance(i, dict) and i.get("topic")]
-            for i in data["ideas"]:
-                if i.get("kind") not in ("post", "carousel", "reel", "toon", "magnet"):
-                    i["kind"] = "post"
+            ideas = []
+            for i in _list(data.get("ideas")):
+                if isinstance(i, str):
+                    i = {"topic": i}
+                if not isinstance(i, dict) or not _s(i.get("topic")):
+                    continue
+                ideas.append({**i, "topic": _s(i.get("topic")), "hook": _s(i.get("hook")), "why": _s(i.get("why")),
+                              "kind": i.get("kind") if i.get("kind") in ("post", "carousel", "reel", "toon", "magnet") else "post"})
+            data["ideas"] = ideas
+            if not ideas:
+                raise ContentError("ИИ не предложил ни одной идеи. Попробуйте ещё раз.")
         if kind == "toon":
             from .toon import normalize_script
-            data.update(normalize_script(data))
+            try:
+                data.update(normalize_script(data))
+            except ValueError:
+                raise ContentError("В сценарии мультика нет ни одной сцены с героями или репликой. Попробуйте ещё раз.") from None
         if kind == "aivideo":
-            clips = [c for c in data.get("clips") or [] if isinstance(c, dict) and c.get("prompt")][:3]
+            clips = [c for c in _list(data.get("clips")) if isinstance(c, dict) and _s(c.get("prompt"))][:3]
             if not clips:
-                raise ValueError("ИИ не вернул ни одного клипа")
-            data["clips"] = [{"prompt": str(c["prompt"]), "voice": str(c.get("voice", ""))} for c in clips]
+                raise ContentError("ИИ не вернул ни одного клипа. Попробуйте ещё раз.")
+            data["clips"] = [{"prompt": _s(c["prompt"]), "voice": _s(c.get("voice"))} for c in clips]
         return data
 
 
 def magnet_text(data: dict) -> str:
     """Лид-магнит как обычный текст — для файла и страницы."""
-    lines = [data.get("title", ""), data.get("subtitle", ""), ""]
+    lines = [data.get("title") or "", data.get("subtitle") or "", ""]
     for n, item in enumerate(data.get("items") or [], 1):
+        item = _pair(item)
         lines.append(f"{n}. {item['title']}")
         lines.append(f"   {item['text']}")
         lines.append("")
