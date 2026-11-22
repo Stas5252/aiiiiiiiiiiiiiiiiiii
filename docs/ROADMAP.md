@@ -15,7 +15,7 @@
 
 | Модуль | Задание | Файлы | Статус |
 |---|---|---|---|
-| A. Установка и запуск | `docs/modules/A_install.md` | `install.sh`, `update.sh`, `.env.example`, `Dockerfile`, `docker-compose.yml`, `leadhunter/config.py`, `README.md`, `.gitignore`, `.gitattributes` | запланировано |
+| A. Установка и запуск | `docs/modules/A_install.md` | `install.sh`, `update.sh`, `.env.example`, `Dockerfile`, `docker-compose.yml`, `leadhunter/config.py`, `README.md`, `.gitignore`, `.gitattributes` | готово, PR в `dev` на проверке |
 | B. Источники и конвейер | `docs/modules/B_leads.md` | `leadhunter/sources/*`, `pipeline.py`, `scoring.py`, `filters.py`, `freshness.py`, `dedup.py`, `geo.py`, `extract.py`, `audit.py`, `llm.py`, `loops.py`, `db.py`, `models.py`, `bot/notify.py` | запланировано |
 | C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | запланировано |
 | D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | запланировано |
