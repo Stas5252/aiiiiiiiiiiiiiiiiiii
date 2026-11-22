@@ -314,3 +314,35 @@ def test_telegram_chat_title_is_not_part_of_scored_text():
     lead = tg_lead("Боты и сайты", "Подскажите, нужен юрист по разводу")
     assert lead.full_text == "Подскажите, нужен юрист по разводу"
     assert lead.extra["chat_title"] == "Боты и сайты" and lead.extra["chat_key"] == "100500"
+
+
+# --- scripts/seed_dev.py: наполнение копии базы ---
+
+async def test_seed_dev_fills_copy_from_five_boards(tmp_path, capsys):
+    import importlib.util
+    import sqlite3
+
+    spec = importlib.util.spec_from_file_location("seed_dev", Path(__file__).parent.parent / "scripts" / "seed_dev.py")
+    seed_dev = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seed_dev)
+
+    work = tmp_path / "work.db"
+    db = Database(str(work))
+    await db.connect()
+    await db.set_setting("threshold", "6")
+    await db.close()
+    before = work.read_bytes()
+
+    copy = tmp_path / "copy.db"
+    total = await seed_dev.seed(str(copy), offline=True, copy_from=str(work))
+    assert set(total) == {"Kwork", "Weblancer", "FL.ru", "Freelance.ru", "Яндекс.Карты"}
+    assert all(r["records"] > 0 and r["new"] > 0 and r["total"] == r["new"] for r in total.values()), total
+    assert work.read_bytes() == before  # рабочая база не тронута
+    con = sqlite3.connect(copy)
+    sources = {r[0] for r in con.execute("SELECT DISTINCT source FROM leads")}
+    assert con.execute("SELECT value FROM settings WHERE key = 'threshold'").fetchone() == ("6",)  # это копия
+    con.close()
+    assert {"kwork", "weblancer", "rss:fl.ru", "freelance.ru", "yandex_maps"} <= sources
+    assert "Яндекс.Карты: записей" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        await seed_dev.seed(str(copy), offline=True, copy_from=str(copy))

@@ -35,7 +35,7 @@ class Enriched:
 
 
 class Notifier(Protocol):
-    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None: ...
+    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> bool | None: ...  # True — доставлено
 
 
 # Заявка, оставленная человеком на нашем лендинге: это уже клиент, а не кандидат в лиды
