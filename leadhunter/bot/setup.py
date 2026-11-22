@@ -1,19 +1,31 @@
-"""Мастер подключений /setup и сводка /status: ключи вводятся прямо в чате, проверяются и применяются сразу."""
+"""Мастер подключений /setup и сводка /status: ключи вводятся в личном чате с ботом, проверяются и применяются сразу."""
 import html
 import logging
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..integrations import INTEGRATIONS, Integrations
+from ..integrations import INTEGRATIONS, Integrations, check_kind, clean_value
 
 log = logging.getLogger(__name__)
 
 GROUPS = {"ai": "🧠 Искусственный интеллект", "publish": "📣 Площадки для публикации", "sources": "🔎 Поиск лидов"}
+PRIVATE_ONLY = "Ключи и подключения — только в личном чате со мной: откройте личку с ботом и напишите /setup. Так их не увидит никто из группы."
+# Что бот обещает сделать с присланным значением и что говорит после — по тому, как оно реально проверяется
+PROMISE = {"live": "я проверю его живым запросом и сразу применю",
+           "format": "я проверю, что оно похоже на правду (сам сервис спросить не могу), и сразу применю",
+           "none": "проверить его отдельно нельзя, поэтому просто сохраню и применю"}
+DONE = {"live": "подключено и уже работает.",
+        "format": "сохранено. Проверен только формат — заработает ли, станет видно при первом использовании.",
+        "none": "сохранено без проверки — заработает ли, станет видно при первом использовании."}
+
+
+def _private(chat) -> bool:
+    return chat is not None and chat.type == "private"
 
 
 class SetupState(StatesGroup):
@@ -52,6 +64,9 @@ def build_setup_router(deps) -> Router:
         if not await owner(m) or not integ():
             return
         await state.clear()
+        if not _private(m.chat):
+            await m.answer(PRIVATE_ONLY)
+            return
         text, kb = await menu_text_kb()
         await m.answer(text, reply_markup=kb)
 
@@ -62,7 +77,7 @@ def build_setup_router(deps) -> Router:
         sm = integ().summary()
         f = deps.extra.get("factory")
         lines = ["<b>Состояние системы</b>"]
-        lines.append(f"{'✅' if sm['ai'] else '❌'} ИИ для лидов и текстов" + (f" — {deps.llm.model}" if deps.llm else " — /setup"))
+        lines.append(f"{'✅' if sm['ai'] else '❌'} ИИ для лидов и текстов" + (f" — {html.escape(str(deps.llm.model))}" if deps.llm else " — /setup"))
         if f is not None:
             lines.append(f"{'✅' if f.ai.images_enabled else '▫️'} Картинки ИИ · {'✅' if f.ai.tts_enabled else '▫️'} Озвучка · "
                          f"{'✅' if f.video_ai and f.video_ai.video_enabled else '▫️'} ИИ-видео"
@@ -70,7 +85,11 @@ def build_setup_router(deps) -> Router:
             if sm["media_ai"]:
                 lines.append("   ℹ️ На бесплатном тарифе Gemini: озвучка — 10 запросов в день, картинки и видео — только с биллингом "
                              "(aistudio.google.com → Billing). Без них обложки рисуются по шаблону.")
-        lines.append(f"{'✅' if sm['miniapp'] else '❌'} Mini App «Кабинет»" + ("" if sm["miniapp"] else " — MINIAPP_TUNNEL=cloudflare в .env"))
+        app_error = deps.extra.get("miniapp_error")
+        if app_error:
+            lines.append(f"❌ Mini App «Кабинет» — {html.escape(app_error)}")
+        else:
+            lines.append(f"{'✅' if sm['miniapp'] else '❌'} Mini App «Кабинет»" + ("" if sm["miniapp"] else " — MINIAPP_TUNNEL=cloudflare в .env"))
         lines.append(f"{'✅' if sm['tg_account'] else '▫️'} Telegram-чаты через аккаунт")
         pubs = await deps.extra["publishers"]() if deps.extra.get("publishers") else []
         lines.append("📣 Публикую в: " + (", ".join(html.escape(p.label) for p in pubs) or "никуда — /channels"))
@@ -83,6 +102,9 @@ def build_setup_router(deps) -> Router:
     async def pick(cq: CallbackQuery, state: FSMContext):
         if not await owner(cq) or not integ():
             await cq.answer("Только владелец")
+            return
+        if not _private(cq.message.chat if cq.message else None):
+            await cq.answer(PRIVATE_ONLY, show_alert=True)
             return
         key = cq.data.split(":")[1]
         i = INTEGRATIONS.get(key)
@@ -102,12 +124,16 @@ def build_setup_router(deps) -> Router:
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
         link = f'\n<a href="{i.url}">Открыть страницу, где взять</a>' if i.url else ""
         await cq.message.answer(f"<b>{html.escape(i.title)}</b>\n{html.escape(i.hint)}{link}\n\n"
-                                f"Пришлите значение одним сообщением — я проверю его живым запросом и сразу применю. "
-                                f"Сообщение с ключом удалю из чата.", reply_markup=kb, disable_web_page_preview=True)
+                                f"Пришлите значение одним сообщением — {PROMISE[check_kind(key)]}. "
+                                f"Сообщение с ключом удалю из чата. Жду 5 минут; передумали — «Отмена» или любая команда.",
+                                reply_markup=kb, disable_web_page_preview=True)
         await cq.answer()
 
     @router.callback_query(F.data == "suc")
     async def cancel(cq: CallbackQuery, state: FSMContext):
+        if not await owner(cq):
+            await cq.answer("Только владелец")
+            return
         await state.clear()
         try:
             await cq.message.delete()
@@ -117,38 +143,52 @@ def build_setup_router(deps) -> Router:
 
     @router.callback_query(F.data.startswith("sux:"))
     async def remove(cq: CallbackQuery, state: FSMContext):
-        if not await owner(cq):
+        if not await owner(cq) or not integ():
+            await cq.answer("Только владелец")
             return
-        key = cq.data.split(":")[1]
-        await integ().unset(key)
         await state.clear()
+        key = cq.data.split(":")[1]
+        if key not in INTEGRATIONS:
+            await cq.answer("Нет такого")
+            return
+        if not _private(cq.message.chat if cq.message else None):
+            await cq.answer(PRIVATE_ONLY, show_alert=True)
+            return
+        await integ().unset(key)
         text, kb = await menu_text_kb()
-        await cq.message.edit_text(text, reply_markup=kb)
+        try:
+            await cq.message.edit_text(text, reply_markup=kb)
+        except TelegramBadRequest:
+            pass
         await cq.answer("Удалил")
 
     @router.message(SetupState.value, F.text)
     async def got_value(m: Message, state: FSMContext):
         data = await state.get_data()
+        await state.clear()  # что бы ни случилось дальше, режим ввода не должен остаться висеть
         key = data.get("key")
-        value = (m.text or "").strip().strip("`")
+        if key not in INTEGRATIONS or not integ() or not await owner(m) or not _private(m.chat):
+            return
+        if (m.text or "").startswith("/"):
+            return
+        value = clean_value(m.text)
+        deleted = True
         try:
             await m.delete()  # ключ не должен висеть в истории чата
-        except TelegramBadRequest:
-            pass
-        if not key or not await owner(m):
-            await state.clear()
-            return
-        if value.startswith("/"):
-            await state.clear()
-            return
+        except TelegramAPIError:
+            deleted = False
+        note = "" if deleted else "\n\n⚠️ Не смог удалить ваше сообщение с ключом — удалите его из чата вручную."
         wait = await m.answer("Проверяю…")
-        err = await integ().set(key, value)
-        await state.clear()
+        try:
+            err = await integ().set(key, value)
+        except Exception as e:  # текст ошибки не печатаем: в нём может оказаться сам ключ
+            log.error("подключение %s: проверка упала (%s)", key, type(e).__name__)
+            err = f"внутренняя ошибка ({type(e).__name__})"
         if err:
-            await wait.edit_text(f"❌ Не принято: {html.escape(err)}\n\nПопробуйте ещё раз: /setup")
+            await wait.edit_text(f"❌ Не принято: {html.escape(err)}\n\nПопробуйте ещё раз: /setup{note}")
             return
         text, kb = await menu_text_kb()
-        await wait.edit_text(f"✅ {html.escape(INTEGRATIONS[key].title)} подключено и уже работает.\n\n" + text, reply_markup=kb)
+        await wait.edit_text(f"✅ {html.escape(INTEGRATIONS[key].title)} — {DONE[check_kind(key)]}{note}\n\n" + text, reply_markup=kb)
 
     return router
 
@@ -166,11 +206,17 @@ def build_onboarding_callbacks(deps) -> Router:
         integ = deps.extra.get("integrations")
         if integ is None:
             return
+        if not _private(cq.message.chat if cq.message else None):
+            await cq.message.answer(PRIVATE_ONLY)
+            return
         text, kb = await _menu(deps)
         await cq.message.answer(text, reply_markup=kb)
 
     @router.callback_query(F.data == "ob:niche")
     async def ob_niche(cq: CallbackQuery):
+        if not await deps.guard.allowed(cq.from_user, cq.message.chat.id if cq.message else None):
+            await cq.answer("Нет доступа")
+            return
         from ..niches import NICHES
         cur = await deps.db.get_setting("niche", "")
         rows = [[InlineKeyboardButton(text=f"{'▶️ ' if k == cur else ''}{n.title[:38]}", callback_data=f"nz:{k}")] for k, n in NICHES.items()]

@@ -1,4 +1,7 @@
+import html
 import logging
+import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,7 +14,7 @@ from .filters import evaluate
 from .freshness import Freshness, check as freshness_check
 from .geo import geo_allows
 from .llm import LLMClassifier
-from .models import Lead
+from .models import SOURCE_SETTINGS, Lead
 from .scoring import ScoreResult, score_text
 
 log = logging.getLogger(__name__)
@@ -32,14 +35,18 @@ class Enriched:
 
 
 class Notifier(Protocol):
-    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None: ...
+    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> bool | None: ...  # True — доставлено
 
 
-SOURCE_SETTINGS = {'kwork': ('leads_boards', '1'), 'rss': ('leads_boards', '1'), 'weblancer': ('leads_boards', '1'), 'freelance.ru': ('leads_boards', '1'), 'telegram': ('leads_social', '1'), 'vk': ('leads_social', '1'), 'threads': ('leads_social', '1'), 'instagram': ('leads_social', '1'), 'hh.ru': ('leads_jobs', '0'), 'yandex_maps': ('leads_maps', '1'), 'site_audit': ('leads_maps', '1'), 'web': ('leads_web', '0')}
+# Заявка, оставленная человеком на нашем лендинге: это уже клиент, а не кандидат в лиды
+DIRECT_SOURCES = {"landing"}
+SPAM_IGNORE_HOURS = 24
+WEB_INTENT_RE = re.compile(r"\b(?:ищу|ищем|требуется|требуются|закажу|закажем|нужен исполнитель|нужен подрядчик)\b", re.I)
 
 
 class Pipeline:
-    """Дедуп → игнор-листы → спам-детект → свежесть → гео → правила → контакты → словарь → ИИ → сохранение → уведомление."""
+    """Дедуп → игнор-листы → свежесть → гео → правила → контакты → словарь → ИИ → порог → спам-детект →
+    сохранение → уведомление. Заявки с лендинга идут в обход фильтров: _handle_direct()."""
 
     def __init__(self, db: Database, notifier: Notifier, default_threshold: int, llm: LLMClassifier | None = None,
                  *, max_age_hours: int = 48, llm_min_score: int = 2, profile: str = "", spam_chats: int = 3):
@@ -52,6 +59,8 @@ class Pipeline:
         self.default_profile = profile
         self.spam_chats = spam_chats
         self.near_dups = NearDuplicateIndex()
+        self._warmed = False
+        self._quota_alert_at = 0.0
         # Необязательный хук: по sender_id Telegram вернуть bio автора — идёт в ИИ и карточку
         self.author_bio: Callable[[int], Awaitable[str]] | None = None
 
@@ -67,23 +76,56 @@ class Pipeline:
         return bool(author_keys & ignored["author"].keys())
 
     async def _is_spammer(self, lead: Lead) -> bool:
-        # Один и тот же автор в нескольких чатах за час — это рассылка исполнителя, а не запрос клиента
+        """Один автор с запросами в нескольких чатах за час — рассылка исполнителя, а не клиент.
+        Считаются только сообщения, прошедшие оценку. Игнор временный, владелец получает алерт."""
         chat_key = lead.extra.get("chat_key")
         if not chat_key or not lead.contact or self.spam_chats <= 0:
             return False
         n = await self.db.author_seen(lead.contact, chat_key)
-        if n >= self.spam_chats:
-            await self.db.add_ignored("author", lead.contact, f"авто: {n} чатов за час")
-            log.info("spammer %s: %d чатов за час", lead.contact, n)
-            return True
-        return False
+        if n < self.spam_chats:
+            return False
+        await self.db.add_ignored("author", lead.contact, f"авто: запросы в {n} чатах за час, на {SPAM_IGNORE_HOURS} ч",
+                                  hours=SPAM_IGNORE_HOURS)
+        await self.db.add_alert(
+            f"spam:{lead.contact.lower()}",
+            f"🚫 {html.escape(lead.contact)} оставил запросы в {n} чатах за час — похоже на рассылку. "
+            f"Его сообщения не показываю {SPAM_IGNORE_HOURS} ч. Вернуть раньше: /unblock {html.escape(lead.contact)}")
+        log.info("spammer %s: %d чатов за час", lead.contact, n)
+        return True
+
+    async def _warm(self) -> None:
+        """После перезапуска семантический дедуп должен помнить лиды последних 48 ч."""
+        if self._warmed:
+            return
+        self._warmed = True
+        for text, at in await self.db.recent_lead_texts(int(self.near_dups.ttl // 3600)):
+            self.near_dups.add(text, at.timestamp())
+
+    async def _handle_direct(self, lead: Lead, quiet: bool) -> bool:
+        """Заявка с лендинга: человек сам оставил контакт. Тексты заявок шаблонные, поэтому дедуп по тексту,
+        правила, гео и порог к ним не применяются — повтор отсекает только уникальный external_id."""
+        if not await self.db.mark_seen(lead.source, lead.external_id):
+            return False
+        if not lead.contact:
+            lead.contact = extract_contacts(lead.text)
+        res = score_text(lead.full_text, await self.db.get_keywords(), intent_implied=True)
+        service = res.services[0] if res.services else ""
+        score = lead.preset_score if lead.preset_score is not None else 9
+        info = Enriched(score, res, service=service, budget=extract_budget(lead.text),
+                        draft=await self._template(service))
+        # pending даже на паузе: заявка дойдёт, как только паузу снимут
+        lead_id = await self.db.save_lead(lead, info.score, info.res, service=info.service, budget=info.budget,
+                                          draft=info.draft, pending=True)
+        if not quiet and await self.db.get_setting("paused") != "1":
+            await self.notifier.notify(lead_id, lead, info)
+        return True
 
     async def handle(self, lead: Lead, *, quiet: bool = False) -> bool:
         """quiet — сохранить без уведомления (лимит пачки у источника)."""
-        if lead.source.startswith("web:"):
-            import re
-            if not re.search(r"\b(?:ищу|ищем|требуется|требуются|закажу|закажем|нужен исполнитель|нужен подрядчик)\b", lead.full_text, re.I):
-                return False
+        if lead.source in DIRECT_SOURCES:
+            return await self._handle_direct(lead, quiet)
+        if lead.source.startswith("web:") and not WEB_INTENT_RE.search(lead.full_text):
+            return False
         setting = SOURCE_SETTINGS.get(lead.source.split(":")[0])
         if setting and await self.db.get_setting(*setting) != "1":
             return False
@@ -93,7 +135,7 @@ class Pipeline:
             return False
         if not await self.db.mark_hash_seen(lead.full_text):
             return False
-        if await self._is_ignored(lead) or await self._is_spammer(lead):
+        if await self._is_ignored(lead):
             return False
         found = lead.found_at if lead.found_at.tzinfo else lead.found_at.replace(tzinfo=timezone.utc)
         if datetime.now(timezone.utc) - found > self.max_age:
@@ -121,17 +163,36 @@ class Pipeline:
         info.freshness = mark
         if bonus and lead.preset_score is None:
             info.score = min(10, info.score + bonus)
-        if info.score < await self.threshold():
+        # Балл, который источник выставил сам (карты — 6, аудит сайта — 5), с порогом не сравниваем:
+        # иначе /threshold 6–7 молча выключает карты целиком. Их выключатель — группа «Компании с карт».
+        if lead.preset_score is None and info.score < await self.threshold():
             return False
+        if await self._is_spammer(lead):
+            return False
+        await self._warm()
         if self.near_dups.is_duplicate(lead.full_text):
             return False
 
+        deliver = not quiet and await self.db.get_setting("paused") != "1"
         lead_id = await self.db.save_lead(lead, info.score, info.res, summary=info.summary, service=info.service,
                                           budget=info.budget, urgency=info.urgency, draft=info.draft,
-                                          rule=info.rule, author_bio=info.author_bio, freshness=info.freshness)
-        if not quiet and await self.db.get_setting("paused") != "1":
+                                          rule=info.rule, author_bio=info.author_bio, freshness=info.freshness,
+                                          pending=deliver)
+        if deliver:
             await self.notifier.notify(lead_id, lead, info)
         return True
+
+    async def _quota_alert(self) -> None:
+        """Лимит ИИ исчерпан — владелец должен знать, что до конца часа в карточки может идти шум."""
+        if time.monotonic() - self._quota_alert_at < 3600 and self._quota_alert_at:
+            return
+        self._quota_alert_at = time.monotonic()
+        minutes = self.llm.quota_resets_in() if hasattr(self.llm, "quota_resets_in") else 60
+        await self.db.add_alert(
+            "llm_quota",
+            f"⚠️ Лимит ИИ исчерпан ({getattr(self.llm, 'max_per_hour', '?')} вызовов в час). Примерно {minutes} мин "
+            "лиды оцениваются только по словарю: в карточки может попасть реклама и предложения исполнителей, "
+            "которые ИИ отсеивал. Лимит задаётся настройкой LLM_MAX_PER_HOUR.")
 
     async def _enrich(self, lead: Lead, rule: str | None) -> Enriched | None:
         kw = await self.db.get_keywords()
@@ -163,6 +224,8 @@ class Pipeline:
         text = lead.full_text + (f"\n\n[Об авторе: {bio}]" if bio else "")
         verdict = await self.llm.classify(text, profile, good, bad)
         if verdict is None:
+            if getattr(self.llm, "quota_exhausted", False):
+                await self._quota_alert()
             return Enriched(base, res, service=service, budget=budget, rule=rule or "", author_bio=bio,
                             draft=await self._template(service))
         if not verdict.is_lead:
