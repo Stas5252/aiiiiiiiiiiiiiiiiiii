@@ -204,13 +204,25 @@ async def test_v1_code_from_log_makes_owner_once(fresh):
     assert await fresh.db.get_setting("owner_ids") == str(OWNER)
 
 
-async def test_v1_wrong_codes_rotate_the_code(fresh):
+async def test_v1_wrong_codes_lock_out_the_guesser_not_the_owner(fresh):
     code = fresh.guard.claim_code
+    for _ in range(MAX_CLAIM_FAILS * 3):
+        assert "Код владельца" in await fresh.say("/start", OTHER)  # /start без кода — не попытка
     for i in range(MAX_CLAIM_FAILS):
         assert "Код владельца" in await fresh.say(f"/start deadbee{i}", OTHER)
-    assert fresh.guard.claim_code and fresh.guard.claim_code != code
-    await fresh.cmd(f"/start {code}", OTHER)  # старый код уже не действует
+    assert fresh.guard.claim_code == code  # чужой не может сбить код, который владелец ещё не ввёл
+    await fresh.cmd(f"/start {code}", OTHER)  # перебиравший заблокирован, даже если угадал
     assert not await fresh.db.get_setting("owner_ids")
+    assert "ищу вам клиентов" in await fresh.say(f"/start {code}")
+    assert await fresh.db.get_setting("owner_ids") == str(OWNER)
+
+
+async def test_v1_two_simultaneous_claims_give_one_owner(fresh):
+    code = fresh.guard.claim_code
+    users = [User(id=uid, is_bot=False, first_name="x") for uid in (OWNER, OTHER)]
+    won = await asyncio.gather(*(fresh.guard.claim(u, "private", code) for u in users))
+    assert sorted(won) == [False, True]
+    assert await fresh.db.get_setting("owner_ids") == str(users[won.index(True)].id)
 
 
 async def test_v1_group_and_anonymous_admin_cannot_become_owner(fresh):
@@ -272,6 +284,27 @@ async def test_v2_telegram_down_keeps_last_answer_but_never_grants(env):
     env.guard._checked.clear()  # после перезапуска кэша нет: не знаем — не пускаем, но и из команды не удаляем
     assert await env.say("/leads", MEMBER) == ""
     assert await env.db.is_member(MEMBER)
+
+
+async def test_v2_old_group_membership_does_not_count_in_new_group(env):
+    await with_group(env, MEMBER)
+    assert "#1" in await env.say("/leads", MEMBER)
+    new_group = GROUP - 1
+    await env.db.set_setting("workspace_chat_id", str(new_group))  # владелец перенёс работу в другую группу
+    env.session.member_status[MEMBER] = "left"  # в новой группе этого человека нет
+    assert await env.say("/export", MEMBER) == "" and not env.named("SendDocument")
+    assert not await env.db.is_member(MEMBER)
+
+
+async def test_v2_started_edit_is_dropped_when_access_is_revoked(env):
+    await with_group(env, MEMBER)
+    await env.say("/post тема")
+    body = (await env.factory.store.get(1))["body"]
+    await env.press("ce:1", MEMBER)  # участник начал править материал в личке…
+    env.session.member_status[MEMBER] = "left"
+    await env.member_event(MEMBER, "left")  # …и его убрали из группы
+    await env.cmd("текст от человека без доступа", MEMBER)
+    assert env.session.calls == [] and (await env.factory.store.get(1))["body"] == body
 
 
 async def test_v2_sweep_cleans_team_for_cabinet(env):
@@ -398,6 +431,41 @@ async def test_v8_key_input_expires_after_five_minutes(env, monkeypatch):
     real_http(monkeypatch, lambda r: httpx.Response(200, json={}))
     await env.press("su:gemini_api_key")
     now[0] += app_mod.STATE_TTL - 5
+    assert "подключено" in await env.say("AIzaSyTESTKEY1234567890")
+
+
+async def test_v8_expired_input_is_not_taken_as_post_topic_or_edit(env, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(app_mod.time, "time", lambda: now[0])
+    await env.say("/post")
+    now[0] += app_mod.STATE_TTL + 1
+    await env.cmd("это уже не тема поста")
+    assert env.session.calls == [] and await env.factory.store.recent(10) == []
+    await env.say("/post настоящая тема")
+    body = (await env.factory.store.get(1))["body"]
+    for button in ("ce:1", "cr:1"):
+        await env.press(button)
+        now[0] += app_mod.STATE_TTL + 1
+        await env.cmd("запоздалая правка")
+        assert env.session.calls == [] and (await env.factory.store.get(1))["body"] == body, button
+
+
+async def test_v8_other_buttons_do_not_extend_key_input(env, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(app_mod.time, "time", lambda: now[0])
+    await seed(env, 1)
+    await env.press("su:gemini_api_key")
+    now[0] += app_mod.STATE_TTL - 60
+    await env.press("dr:1")  # посмотрел черновик лида — к вводу ключа это отношения не имеет
+    now[0] += 120
+    await env.cmd("коллеги, созвон в 15:00")
+    assert env.session.calls == []
+    # а повторное нажатие той же кнопки подключения — новое ожидание на 5 минут
+    real_http(monkeypatch, lambda r: httpx.Response(200, json={}))
+    await env.press("su:gemini_api_key")
+    now[0] += app_mod.STATE_TTL - 60
+    await env.press("su:gemini_api_key")
+    now[0] += 120
     assert "подключено" in await env.say("AIzaSyTESTKEY1234567890")
 
 
@@ -542,10 +610,16 @@ def test_split_text_keeps_lines_and_markup_whole():
     parts = split_text(text)
     assert len(parts) > 3 and "\n".join(parts) == text
     assert all(tg_html_error(p) is None for p in parts)
-    one_line = "<b>" + "&lt;я&gt;🔥" * 2000 + "</b>"  # одна строка длиннее лимита — режем, не разрывая &сущности;
+    one_line = "<b>" + "&lt;я&gt;🔥" * 2000 + "</b>"  # одна строка длиннее лимита — режем, не разрывая &сущности; и теги
     chunks = split_text(one_line)
-    assert "".join(chunks) == one_line and all(len(c.encode("utf-16-le")) // 2 <= 4000 for c in chunks)
-    assert all(not re.search(r"&[a-z]*$", c) for c in chunks)
+    assert len(chunks) > 1 and all(tg_html_error(c) is None for c in chunks)
+    assert "".join(html.unescape(TAG_RE.sub("", c)) for c in chunks) == "<я>🔥" * 2000
+    assert all(not re.search(r"&[a-z]*$", TAG_RE.sub("", c)) for c in chunks)
+    # тег, открытый в одной части и закрытый в другой (многострочное правило в <code>), закрывается и открывается заново
+    rules = "\n".join(f"{i}. <code>+сайт{i}\n-курс {'я' * 300}</code>" for i in range(40))
+    parts = split_text(rules)
+    assert len(parts) > 1 and all(tg_html_error(p) is None for p in parts)
+    assert "\n".join(html.unescape(TAG_RE.sub("", p)) for p in parts) == html.unescape(TAG_RE.sub("", rules))
     assert split_text("") == [] and split_text("коротко") == ["коротко"]
 
 
@@ -586,6 +660,15 @@ async def test_m8_empty_phrase_list_keeps_old_phrases(env):
     assert await env.deps.phrases.get() == ["нужен лендинг", "ищу разработчика"]
 
 
+async def test_long_multiline_rules_list_is_shown_whole(env):
+    for i in range(40):
+        await env.db.add_rule(f"+сайт{i}\n-курс {'я' * 300}")
+    await env.cmd("/rules")
+    assert not [n for n, _ in env.session.calls if n.endswith(":REJECTED")] and len(env.texts()) > 1
+    shown = TAG_RE.sub("", env.said())
+    assert all(f"+сайт{i}\n-курс" in shown for i in range(40)) and "внутренняя ошибка" not in shown
+
+
 async def test_m9_unbalanced_rule_is_rejected(env):
     for bad in ("/rule_add +(a|", "/rule_add +сайт )", "/rule_add +((а|б))", '/rule_add +"под ключ'):
         assert "Ошибка в правиле" in await env.say(bad), bad
@@ -605,6 +688,16 @@ async def test_crashed_handler_tells_the_owner_and_logs(env, monkeypatch, caplog
     assert "обработчик упал" in caplog.text and "база сломалась" in caplog.text
     alerts = await env.press("take:не-число")
     assert "внутренняя ошибка" in alerts[0]
+    # секрет, попавший в текст исключения, в лог не уходит
+    env.settings.vk_token = SECRET
+
+    async def leak(*a, **k):
+        raise RuntimeError(f"https://api.vk.ru/method/x?access_token={SECRET}")
+
+    monkeypatch.setattr(env.db, "stats", leak)
+    caplog.clear()
+    await env.say("/stats")
+    assert "обработчик упал" in caplog.text and "Traceback" in caplog.text and SECRET not in caplog.text
 
 
 # ---------- V19: фоновые задачи и туннель ----------
@@ -631,6 +724,7 @@ async def test_v19_dead_background_task_is_logged_and_reported(env, caplog):
     by_name = dict(failed)
     assert "MINIAPP_PORT" in by_name["miniapp"]
     assert SECRET not in by_name["threads"] and "RuntimeError" in by_name["threads"]
+    assert "фоновая задача threads упала" in caplog.text and "Traceback" in caplog.text and SECRET not in caplog.text
     # отменённая при остановке бота задача — не авария
     caplog.clear()
     quiet = main_mod.watch_task(asyncio.create_task(asyncio.sleep(60), name="sla"), env.settings, on_fail)
