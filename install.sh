@@ -103,7 +103,11 @@ set_env() { # set_env KEY VALUE
     V="$2" awk -v k="$1" 'BEGIN{done=0} index($0,k"=")==1 && !done {print k"="ENVIRON["V"]; done=1; next} {print} END{if(!done) print k"="ENVIRON["V"]}' .env > "$tmp"
     cat "$tmp" > .env; rm -f "$tmp"
 }
-get_env() { { grep -E "^$1=" .env 2>/dev/null || true; } | head -1 | cut -d= -f2- | sed 's/[[:space:]]*#.*$//'; }
+# Значение без комментария в конце и без кавычек вокруг — так же его читают бот и Docker
+get_env() {
+    { grep -E "^$1=" .env 2>/dev/null || true; } | head -1 | cut -d= -f2- \
+        | sed -e 's/[[:space:]]*#.*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
 
 # .env из старого образца: «KEY=   # комментарий». Docker Compose передаёт такой комментарий боту как значение.
 fix_env_comments() {
