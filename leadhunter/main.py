@@ -2,6 +2,7 @@ import asyncio
 import errno
 import html
 import logging
+import traceback
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -10,7 +11,6 @@ from .bot.app import build_dispatcher
 from .bot.guard import Guard
 from .bot.handlers import BotDeps
 from .bot.notify import TelegramNotifier
-from .bot.workspace import Workspace
 from .config import Settings
 from .content.runtime import build_content, build_llm, reconfigure_ai
 from .content.scheduler import autopilot_loop, content_loop
@@ -51,7 +51,8 @@ def watch_task(task: asyncio.Task, s: Settings, on_fail=None) -> asyncio.Task:
             log.warning("фоновая задача %s завершилась и больше не работает", t.get_name())
             return
         reason = describe_failure(t.get_name(), exc, s)
-        log.error("фоновая задача %s упала: %s", t.get_name(), reason, exc_info=exc)
+        # трассировку пишем сами и через scrub: в тексте исключения бывает адрес запроса с ключом
+        log.error("фоновая задача %s упала: %s\n%s", t.get_name(), reason, scrub("".join(traceback.format_exception(exc)), s))
         if on_fail:
             alert = asyncio.get_running_loop().create_task(on_fail(t.get_name(), reason))
             _alerts.add(alert)
