@@ -214,11 +214,14 @@ def test_config_self_check_command(tmp_path):
     assert bad.returncode == 1 and "DIGEST_TZ" in bad.stderr and "Traceback" not in bad.stderr
 
 
-def test_bot_start_with_bad_env_has_no_traceback(tmp_path):
-    """python -m leadhunter с ошибкой в .env: одно понятное сообщение, без трассы Python."""
+def test_bot_start_with_bad_env_names_the_setting(tmp_path):
+    """python -m leadhunter с ошибкой в .env не стартует и называет настройку по-русски.
+    Контейнер и служба systemd перед ботом запускают проверку настроек — там сообщение без трассы Python."""
     write_env(tmp_path, "SCORE_THRESHOLD=много\n")
     res = run_py(["-m", "leadhunter"], tmp_path, {"PYTHONPATH": str(ROOT)})
-    assert res.returncode == 1 and "SCORE_THRESHOLD" in res.stderr and "Traceback" not in res.stderr
+    assert res.returncode == 1 and "SCORE_THRESHOLD: нужно целое число" in res.stderr
+    assert "python -m leadhunter.config && exec python -m leadhunter" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "ExecStartPre=$SELF_DIR/.venv/bin/python -m leadhunter.config" in (ROOT / "install.sh").read_text(encoding="utf-8")
 
 
 # ---------- файлы репозитория ----------

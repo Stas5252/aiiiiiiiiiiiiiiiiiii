@@ -303,6 +303,7 @@ Wants=network-online.target
 User=$user
 WorkingDirectory=$SELF_DIR
 Environment=PATH=$SELF_DIR/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=$SELF_DIR/.venv/bin/python -m leadhunter.config
 ExecStart=$SELF_DIR/.venv/bin/python -m leadhunter
 Restart=always
 RestartSec=5

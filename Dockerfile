@@ -14,4 +14,5 @@ RUN pip install --no-cache-dir . \
     && patchright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 VOLUME ["/app/data"]
-CMD ["python", "-m", "leadhunter"]
+# Сначала проверка .env: при ошибке в логах будет одна понятная строка, а не трасса Python
+CMD ["sh", "-c", "python -m leadhunter.config && exec python -m leadhunter"]
