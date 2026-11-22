@@ -66,7 +66,8 @@ a { color: var(--fg); text-underline-offset: 2px; }
 .kpi-row .kpi { flex: 1; min-width: 0; }
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .kpi { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px 12px; }
-.kpi b { display: block; font-size: 28px; font-weight: 700; letter-spacing: -.04em; line-height: 1.1; white-space: nowrap; }
+.kpi b { display: block; font-size: clamp(22px, 7.5vw, 28px); font-weight: 700; letter-spacing: -.04em; line-height: 1.1; white-space: nowrap; }
+.kpi b small { font-size: .5em; font-weight: 600; letter-spacing: 0; }
 .kpi span { display: block; font-size: 12px; color: var(--hint); margin-top: 4px; line-height: 1.25; }
 .kpi.good span::before { content: "● "; color: var(--fg); }
 .kpi.bad span::before { content: "○ "; color: var(--fg); }
@@ -88,7 +89,7 @@ a { color: var(--fg); text-underline-offset: 2px; }
 .lead .meta .dot::before { content: "·"; margin-right: 6px; }
 .lead .meta .me { color: var(--fg); font-weight: 600; }
 .lead .meta a { color: var(--sub); }
-.badge { font-size: 11px; font-weight: 600; line-height: 1; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line2); color: var(--sub); white-space: nowrap; }
+.badge { font-size: 11px; font-weight: 600; line-height: 1; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line2); color: var(--sub); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .badge.deal { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .badge.hot { border-color: var(--fg); color: var(--fg); }
 .badge.taken, .badge.contacted, .badge.replied { border-color: var(--fg); color: var(--fg); }
@@ -109,7 +110,7 @@ a { color: var(--fg); text-underline-offset: 2px; }
 /* поиск, сегменты, чипсы */
 .search { margin: 0 0 12px; }
 .segmented { display: flex; border: 1px solid var(--line2); border-radius: 10px; padding: 2px; gap: 2px; margin-bottom: 12px; }
-.segmented button { flex: 1; padding: 7px 0; border-radius: 8px; font-size: 14px; color: var(--sub); font-weight: 500; }
+.segmented button { flex: 1 1 auto; min-width: 0; padding: 7px 4px; border-radius: 8px; font-size: 14px; color: var(--sub); font-weight: 500; }
 .segmented button.on { background: var(--fg); color: var(--bg); font-weight: 600; }
 .card + .segmented { margin-top: 12px; }
 .segmented.small { margin: 0; width: auto; flex: 0 0 auto; } .segmented.small button { padding: 5px 12px; font-size: 13px; }
@@ -127,7 +128,8 @@ a { color: var(--fg); text-underline-offset: 2px; }
 .bars.few div { flex: 0 0 28px; }
 .bars div.deal { background: var(--fg); }
 .funnel { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
-.funnel .fr { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; font-size: 14px; }
+.funnel .fr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 14px; }
+.funnel .fr > div { min-width: 0; overflow-wrap: anywhere; }
 .funnel .fr .bar { height: 4px; border-radius: 2px; background: var(--line); position: relative; margin-top: 6px; }
 .funnel .fr .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--bar); }
 .funnel .fr .bar b { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--fg); }
@@ -136,6 +138,8 @@ a { color: var(--fg); text-underline-offset: 2px; }
 .funnel .fr .n b { color: var(--fg); }
 .rows { display: flex; flex-direction: column; }
 .rows .row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.rows .row > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows.small .row > span:first-child { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
 .rows .row:first-child { padding-top: 0; }
 .rows .row:last-child { border-bottom: 0; padding-bottom: 0; }
 .rows .row .n { color: var(--hint); white-space: nowrap; }
@@ -266,3 +270,19 @@ details.card[open] summary { margin-bottom: 12px; }
 .setup { gap: 8px; }
 .toast { width: max-content; max-width: calc(100vw - 32px); text-align: center; }
 select option { color: var(--fg); background-color: var(--bg); }
+
+/* заявки со страниц лид-магнитов */
+.ll-list { display: flex; flex-direction: column; }
+.ll { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.ll:first-child { padding-top: 0; }
+.ll:last-child { border-bottom: 0; padding-bottom: 0; }
+.ll-top { display: flex; justify-content: space-between; gap: 12px; }
+.ll-who { min-width: 0; }
+.ll-top .n { color: var(--hint); white-space: nowrap; flex: 0 0 auto; }
+.ll-msg { color: var(--sub); margin-top: 2px; }
+input:not([type="checkbox"]):disabled, .switch input:disabled + span { opacity: .45; }
+/* переключатель из четырёх кнопок внутри карточки помещается и на 320 px */
+.card .segmented.small button { padding: 5px 4px; }
+/* отчёт по команде: имя не сжимается до «Ма…», цифры при нехватке места переносятся */
+#team .row > span:first-child { flex: 0 0 auto; max-width: 50%; }
+#team .row .n { white-space: normal; text-align: right; min-width: 0; }

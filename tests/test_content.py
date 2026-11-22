@@ -396,7 +396,9 @@ async def test_miniapp_content_api_and_landing(client, env):
     assert (await client.post(f"/lp/{item['slug']}", data={"name": "Оля", "contact": ""})).status == 400
     assert (await client.post(f"/lp/{item['slug']}", data={"contact": "@bot", "website": "spam"})).status == 400
     env.session.reset()
-    r = await client.post(f"/lp/{item['slug']}", data={"name": "Оля", "contact": "@olya", "message": "хочу сайт для салона"})
+    token = page.split('name="token" value="')[1].split('"')[0]  # одноразовый токен формы (модуль D, находка K2)
+    r = await client.post(f"/lp/{item['slug']}", data={"name": "Оля", "contact": "@olya", "message": "хочу сайт для салона",
+                                                       "token": token})
     assert r.status == 200 and "Спасибо" in await r.text()
     lead = (await env.db.recent_leads(1))[0]
     assert lead["source"] == "landing" and lead["score"] == 9 and lead["contact"] == "@olya" and "салона" in lead["text"]

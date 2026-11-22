@@ -18,7 +18,7 @@
 | A. Установка и запуск | `docs/modules/A_install.md` | `install.sh`, `update.sh`, `.env.example`, `Dockerfile`, `docker-compose.yml`, `leadhunter/config.py`, `README.md`, `.gitignore`, `.gitattributes` | запланировано |
 | B. Источники и конвейер | `docs/modules/B_leads.md` | `leadhunter/sources/*`, `pipeline.py`, `scoring.py`, `filters.py`, `freshness.py`, `dedup.py`, `geo.py`, `extract.py`, `audit.py`, `llm.py`, `loops.py`, `db.py`, `models.py`, `bot/notify.py` | запланировано |
 | C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | запланировано |
-| D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | запланировано |
+| D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | сделано, PR в `dev` ждёт слияния; после слияния B снять `xfail` с `test_k1_six_lookalike_requests_become_six_leads` |
 | E. Контент-фабрика | `docs/modules/E_content.md` | `leadhunter/content/*`, `leadhunter/bot/content.py` | запланировано |
 
 ## Волна 2 — новое (после слияния волны 1)

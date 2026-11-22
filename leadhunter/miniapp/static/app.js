@@ -1,6 +1,6 @@
 /* LeadHunter Mini App — три экрана, одна шторка, минимум кнопок. */
 const tg = window.Telegram?.WebApp;
-const initData = tg?.initData || new URLSearchParams(location.search).get("initData") || "";
+const initData = tg?.initData || "";
 const inTelegram = Boolean(tg?.initData);
 if (tg) {
   tg.ready(); tg.expand();
@@ -18,6 +18,12 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const SRC = { telegram: "Telegram", threads: "Threads", instagram: "Instagram", yandex_maps: "Яндекс.Карты", site_audit: "Аудит сайта", "hh.ru": "hh.ru", vk: "VK", kwork: "Kwork", weblancer: "Weblancer", "freelance.ru": "Freelance.ru", web: "Поиск" };
 const STATUS = { new: "новый", taken: "в работе", contacted: "написали", replied: "ответил", deal: "сделка", lost: "отказ", spam: "не лид", hot: "горячий" };
 const SERVICE = { "сайт": "Сайт", "бот": "Бот", "автоматизация": "Автоматизация", "мультик": "Видео" };
+/* ссылки из данных — только http(s) и tg:, иначе ссылки нет */
+const safeHref = (u) => /^(https?:\/\/|tg:)/i.test(String(u ?? "").trim()) ? String(u).trim() : "";
+const plural = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many; };
+/* «5 мин», «2 ч»: число крупно, единица мелко — помещается в узкую карточку */
+const fmtDur = (min) => { const m = Math.round(min); const [v, u] = m < 90 ? [m, "мин"] : m < 48 * 60 ? [Math.round(m / 60), "ч"] : [Math.round(m / 1440), "дн"]; return `${v}<small> ${u}</small>`; };
+const OPEN = ["new", "hot", "taken", "contacted", "replied"];
 const srcName = (s) => SRC[s.split(":")[0]] || (s.startsWith("rss:") ? s.slice(4) : s);
 const fmtTime = (iso) => { const d = new Date(iso), now = new Date(); const diff = (now - d) / 60000;
   if (diff < 1) return "только что"; if (diff < 60) return `${Math.floor(diff)} мин`; if (diff < 24 * 60) return `${Math.floor(diff / 60)} ч`;
@@ -108,20 +114,22 @@ function refresh() { screens[current]?.(); }
 async function loadToday() {
   try {
     const [stats, newLeads, mine, meResp] = await Promise.all([
-      api("/api/stats?days=1"), api("/api/leads?status=new&limit=20"), api("/api/leads?status=open&mine=1&limit=20"), me ? Promise.resolve({ user: me }) : api("/api/me"),
+      api("/api/stats?days=1"), api("/api/leads?status=new,hot&limit=20"), api("/api/leads?status=open&mine=1&limit=20"), me ? Promise.resolve({ user: me }) : api("/api/me"),
     ]);
     me = meResp.user;
     const total = Object.values(stats.by_status).reduce((a, b) => a + b, 0);
     const kpi = (v, l, c = "") => `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`;
-    $("#today-kpi").innerHTML = kpi(total, "лидов за сутки") + kpi(stats.by_status.new || 0, "ждут", (stats.by_status.new || 0) > 5 ? "bad" : "")
-      + kpi(stats.response.median_min == null ? "—" : Math.round(stats.response.median_min) + " мин", "до «беру»", stats.response.median_min != null && stats.response.median_min <= 5 ? "good" : "");
+    const waiting = (stats.by_status.new || 0) + (stats.by_status.hot || 0);
+    $("#today-kpi").innerHTML = kpi(total, plural(total, "лид", "лида", "лидов") + " за сутки") + kpi(waiting, plural(waiting, "ждёт", "ждут", "ждут"), waiting > 5 ? "bad" : "")
+      + kpi(stats.response.median_min == null ? "—" : fmtDur(stats.response.median_min), "до «беру»", stats.response.median_min != null && stats.response.median_min <= 5 ? "good" : "");
     const broken = stats.sources.filter((s) => s.includes("⚠️"));
     $("#today-alert").classList.toggle("hidden", !broken.length);
     if (broken.length) $("#today-alert").textContent = broken.map((s) => s.split(" — ")[0]).join(", ") + (broken.length > 1 ? " не работают" : " не работает") + " — смотрите Отчёт";
-    const hot = newLeads.leads.filter((l) => l.score >= 6), rest = newLeads.leads.filter((l) => l.score < 6);
-    $("#today-new-count").textContent = newLeads.leads.length || "";
-    $("#today-new").innerHTML = [...hot, ...rest].slice(0, 10).map((l) => leadRow(l)).join("") || `<div class="empty">Все лиды разобраны 👌</div>`;
-    const my = mine.leads.filter((l) => l.status !== "new");
+    const rank = (l) => l.status === "hot" ? 0 : l.score >= 6 ? 1 : 2;
+    const todo = [...newLeads.leads].sort((a, b) => rank(a) - rank(b));
+    $("#today-new-count").textContent = todo.length || "";
+    $("#today-new").innerHTML = todo.slice(0, 10).map((l) => leadRow(l)).join("") || `<div class="empty">Все лиды разобраны 👌</div>`;
+    const my = mine.leads.filter((l) => l.status !== "new" && l.status !== "hot");
     $("#today-mine-count").textContent = my.length || "";
     $("#today-mine").innerHTML = my.map((l) => leadRow(l, { mineLabel: true })).join("") || `<div class="empty">Свайпните лид вправо, чтобы взять</div>`;
     bindRows($("#today-new")); bindRows($("#today-mine"));
@@ -181,10 +189,10 @@ async function openLead(id) {
   haptic.tap(); sheetId = id;
   let data; try { data = await api("/api/leads/" + id); } catch (e) { toast(e.message); return; }
   const { lead: l, events } = data;
-  const open = ["new", "taken", "contacted", "replied"].includes(l.status);
+  const open = OPEN.includes(l.status), fresh = l.status === "new" || l.status === "hot";
   const mineLead = me && l.assigned_to === me.id;
   // одно главное действие — следующий шаг воронки
-  const next = l.status === "new" ? ["taken", "👋 Беру"] : l.status === "taken" ? ["contacted", "✅ Написал клиенту"]
+  const next = fresh ? ["taken", "👋 Беру"] : l.status === "taken" ? ["contacted", "✅ Написал клиенту"]
     : l.status === "contacted" ? ["replied", "💬 Клиент ответил"] : l.status === "replied" ? ["deal", "🤝 Сделка"] : null;
   const facts = [];
   if (l.contact) facts.push(["Контакт", linkify(l.contact)]);
@@ -192,7 +200,8 @@ async function openLead(id) {
   if (l.author_bio) facts.push(["О себе", esc(l.author_bio)]);
   if (l.chat_title) facts.push(["Чат", esc(l.chat_title)]);
   if (l.budget) facts.push(["Бюджет", esc(l.budget)]);
-  if (l.url) facts.push(["Источник", `<a href="${esc(l.url)}" data-ext>${esc(srcName(l.source))} ↗</a>`]);
+  const srcHref = safeHref(l.url);
+  if (srcHref) facts.push(["Источник", `<a href="${esc(srcHref)}" data-ext>${esc(srcName(l.source))} ↗</a>`]);
   $("#sheet-content").innerHTML = `
     <h2>${esc(l.summary || l.title || l.text.slice(0, 90))}</h2>
     <div class="status-line">
@@ -210,8 +219,8 @@ async function openLead(id) {
     ${l.draft ? `<div class="draft"><div class="card-title">Черновик ответа <button class="text" id="copy" style="padding:0">Скопировать</button></div><pre id="draft">${esc(l.draft)}</pre></div>` : ""}
     ${next && !setMain(next[1], next[0]) ? `<button class="primary" data-s="${next[0]}">${next[1]}</button>` : ""}
     <div class="secondary">
-      ${l.status === "new" ? `<button data-s="hot">🔥 Горячий</button><button data-s="spam" class="danger">Не лид</button>` : ""}
-      ${open && l.status !== "new" ? `<button data-s="lost" class="danger">Отказ</button>` : ""}
+      ${l.status === "new" ? `<button data-s="hot">🔥 Горячий</button>` : ""}${fresh ? `<button data-s="spam" class="danger">Не лид</button>` : ""}
+      ${open && !fresh ? `<button data-s="lost" class="danger">Отказ</button>` : ""}
       ${!open ? `<button data-s="taken">↩︎ Вернуть в работу</button>` : ""}
     </div>
     <div class="history">${events.map((e) => `${new Date(e.at).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} — ${STATUS[e.status] || e.status}${e.user_name ? " · " + esc(e.user_name) : ""}`).join("<br>")}</div>`;
@@ -220,14 +229,19 @@ async function openLead(id) {
   $$("#sheet-content [data-s]").forEach((b) => b.onclick = async () => { if (await act(id, b.dataset.s)) openLead(id); });
   const ex = $("#expand"); if (ex) ex.onclick = () => { $("#lead-text").classList.remove("clamp"); ex.remove(); };
   const cp = $("#copy"); if (cp) cp.onclick = () => { navigator.clipboard?.writeText($("#draft").textContent); haptic.ok(); toast("Скопировано"); };
-  $$("#sheet-content a").forEach((a) => a.onclick = (ev) => { if (tg?.openLink && a.dataset.ext !== undefined) { ev.preventDefault(); tg.openLink(a.href); } else if (tg?.openTelegramLink && a.href.includes("t.me")) { ev.preventDefault(); tg.openTelegramLink(a.href); } });
+  bindLinks($("#sheet-content"));
+}
+/* внутри Telegram ссылки открываем его средствами, а не уходом со страницы кабинета */
+function bindLinks(root) {
+  $$("a", root).forEach((a) => a.onclick = (ev) => { if (!inTelegram) return;
+    if (tg.openLink && a.dataset.ext !== undefined) { ev.preventDefault(); tg.openLink(a.href); } else if (tg.openTelegramLink && /^https:\/\/t\.me\//.test(a.href)) { ev.preventDefault(); tg.openTelegramLink(a.href); } });
 }
 function linkify(c) {
   const parts = c.split(/,\s*/).map((p) => {
-    if (p.startsWith("@")) return `<a href="https://t.me/${esc(p.slice(1))}">${esc(p)}</a>`;
+    if (/^@[A-Za-z0-9_]{3,32}$/.test(p)) return `<a href="https://t.me/${esc(p.slice(1))}">${esc(p)}</a>`;
     if (/^https?:\/\//.test(p)) return `<a href="${esc(p)}" data-ext>${esc(p.replace(/^https?:\/\/(www\.)?/, ""))}</a>`;
     if (/^\+?\d[\d\s()\-]{6,}$/.test(p)) return `<a href="tel:${esc(p.replace(/[^\d+]/g, ""))}">${esc(p)}</a>`;
-    if (p.includes("@")) return `<a href="mailto:${esc(p)}">${esc(p)}</a>`;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p)) return `<a href="mailto:${esc(p)}">${esc(p)}</a>`;
     return esc(p);
   });
   return parts.join(", ");
@@ -248,15 +262,16 @@ async function loadStats() {
     const s = statsCache = await api("/api/stats?days=" + days);
     const total = Object.values(s.by_status).reduce((a, b) => a + b, 0);
     const kpi = (v, l, c = "") => `<div class="kpi ${c}"><b>${v}</b><span>${l}</span></div>`;
-    $("#stats-kpi").innerHTML = kpi(total, "лидов") + kpi(s.by_status.deal || 0, "сделок", "good")
-      + kpi(s.response.median_min == null ? "—" : Math.round(s.response.median_min) + " мин", "медиана до «беру»")
+    const deals = s.by_status.deal || 0;
+    $("#stats-kpi").innerHTML = kpi(total, plural(total, "лид", "лида", "лидов")) + kpi(deals, plural(deals, "сделка", "сделки", "сделок"), "good")
+      + kpi(s.response.median_min == null ? "—" : fmtDur(s.response.median_min), "медиана до «беру»")
       + kpi(s.response.under5_pct == null ? "—" : s.response.under5_pct + "%", "взяты за 5 минут", s.response.under5_pct >= 50 ? "good" : "");
     const max = Math.max(1, ...s.per_day.map((d) => d.n));
     $("#chart-days").innerHTML = s.per_day.map((d) => `<div class="${d.deals ? "deal" : ""}" style="height:${(d.n / max) * 100}%" title="${d.day}: ${d.n}"></div>`).join("") || `<div class="empty">пока пусто</div>`;
     $("#chart-days").classList.toggle("few", s.per_day.length < 7);
     renderFunnel(s);
     const byUser = {}; s.team.forEach((t) => { (byUser[t.user_name] ||= {})[t.status] = t.n; });
-    $("#team").innerHTML = Object.entries(byUser).map(([n, v]) => `<div class="row"><span>${esc(n)}</span><span class="n">взял ${v.taken || 0} · написал ${v.contacted || 0} · сделок ${v.deal || 0}</span></div>`).join("") || `<div class="empty">пока никто не брал лидов</div>`;
+    $("#team").innerHTML = Object.entries(byUser).map(([n, v]) => `<div class="row"><span>${esc(n)}</span><span class="n">взял ${v.taken || 0} · написал ${v.contacted || 0} · сделки: ${v.deal || 0}</span></div>`).join("") || `<div class="empty">пока никто не брал лидов</div>`;
     $("#sources").innerHTML = s.sources.map((x) => { const [name, rest] = x.split(" — "); return `<div class="row"><span>${esc(name)}</span><span class="n">${esc(rest || "")}</span></div>`; }).join("");
   } catch (e) { toast(e.message); }
 }
@@ -275,22 +290,34 @@ $("#c-make").onclick = async () => {
 async function cact(id, body) { try { const r = await api("/api/content/" + id, { method: "POST", body: JSON.stringify(body) }); haptic.ok(); if (r.errors?.length) toast(r.errors.join("; ")); else if (r.results) toast("Опубликовано"); loadContent(); } catch (e) { haptic.err(); toast(e.message); } }
 function contentRow(it) {
   const when = it.scheduled_at && it.status === "scheduled" ? " · " + new Date(it.scheduled_at).toLocaleString("ru", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
-  const links = (it.published || []).map((p) => p.url ? `<a href="${esc(p.url)}" target="_blank">${esc(p.platform)}</a>` : esc(p.platform)).join(" ");
+  const links = (it.published || []).map((p) => safeHref(p.url) ? `<a href="${esc(safeHref(p.url))}" target="_blank" rel="noopener">${esc(p.platform)}</a>` : esc(p.platform)).join(" ");
   const cover = it.images?.[0] ? `<img src="${esc(it.images[0])}" alt="">` : it.video ? `<span class="score">▶</span>` : `<span class="score">${KIND[it.kind]?.[0] || "?"}</span>`;
-  const act = it.status === "published" ? "" : `<div class="c-actions">
+  const act = it.status === "published" || it.status === "rejected" ? "" : `<div class="c-actions">
       <button data-a="publish">${it.status === "scheduled" ? "Сейчас" : "Опубликовать"}</button>
       ${it.status === "scheduled" ? `<button data-a="draft">Снять</button>` : `<button data-a="pick">Когда</button>`}
       <button data-a="reject" class="danger">Удалить</button>
       <input type="datetime-local" class="hidden c-when"></div>`;
   return `<div class="lead c-item" data-id="${it.id}"><div class="inner">${cover}<div class="body">
     <div class="title">${esc(it.title || it.topic)}</div>
-    <div class="sub">${esc((it.text || "").replace(/<[^>]+>/g, "").slice(0, 160))}</div>
-    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${CSTATUS[it.status] || it.status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${esc(it.slug)}" target="_blank">страница</a></span>` : ""}</div>
+    <div class="sub">${esc((it.text || "").slice(0, 160))}</div>
+    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${CSTATUS[it.status] || it.status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${encodeURIComponent(it.slug)}" target="_blank" rel="noopener">страница</a></span>` : ""}</div>
     ${act}</div></div></div>`;
+}
+/* заявки со страниц лид-магнитов: видны все, даже если заявка не стала лидом */
+function renderLandingLeads(items) {
+  $("#c-landing-card").classList.toggle("hidden", !items.length);
+  $("#c-landing-count").textContent = items.length || "";
+  $("#c-landing").innerHTML = items.map((x) => `<div class="ll">
+      <div class="ll-top"><span class="ll-who"><b>${esc(x.name || "Без имени")}</b> · ${linkify(x.contact || "")}</span><span class="n">${fmtTime(x.at)}</span></div>
+      ${x.message ? `<div class="ll-msg">${esc(x.message)}</div>` : ""}
+      ${x.page ? `<div class="hint">${esc(x.page)}</div>` : ""}</div>`).join("");
+  bindLinks($("#c-landing"));
 }
 async function loadContent() {
   try {
-    const [{ items }, ch] = await Promise.all([api("/api/content?" + new URLSearchParams({ status: C.status })), api("/api/content/channels").catch(() => ({ channels: [] }))]);
+    const [{ items }, ch, ll] = await Promise.all([api("/api/content?" + new URLSearchParams({ status: C.status })), api("/api/content/channels").catch(() => ({ channels: [] })),
+      api("/api/landing-leads?limit=20").catch(() => ({ items: [] }))]);
+    renderLandingLeads(ll.items);
     $("#c-channels").textContent = ch.channels.length ? "→ " + ch.channels.map((c) => c.label).join(", ") : "площадки: /channels в боте";
     const list = $("#content-list");
     list.innerHTML = items.map(contentRow).join("") || `<div class="empty">Пока пусто — напишите тему выше или /post в боте</div>`;
@@ -325,7 +352,12 @@ function tag(text, onDel, cls = "") { const el = document.createElement("span");
 function renderSettings(s) {
   S = s;
   $$("[data-feature]").forEach(el => el.checked = s[el.dataset.feature]);
+  const owner = Boolean(me?.is_owner);
   $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
+  // пауза, каналы и состав команды — только владелец (сервер проверяет то же самое)
+  for (const id of ["#s-paused", "#s-ch-telegram", "#s-ch-vk"]) $(id).disabled = !owner;
+  $("#s-paused-hint").textContent = owner ? "лиды копятся, но не присылаются" : "включает и выключает владелец";
+  $("#s-ch-hint").textContent = owner ? "ключи — в Подключениях ниже" : "каналы и ключи настраивает владелец";
   const ph = $("#s-phrases"); ph.replaceChildren(...s.phrases.map((p) => tag(p, async () => renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ phrases: s.phrases.filter((x) => x !== p) }) })))));
   const rl = $("#s-rules"); rl.replaceChildren(...s.rules.map((r) => tag(r.expr, async () => { await api("/api/rules/" + r.id, { method: "DELETE" }); loadSettings(); })));
   if (!s.rules.length) rl.innerHTML = `<span class="hint">Правил нет — лиды отбираются словарём и ИИ</span>`;
@@ -343,7 +375,7 @@ function renderSettings(s) {
   ig.replaceChildren(...Object.entries(s.ignored.chat).map(([k, v]) => tag("💬 " + (v || k), async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })),
     ...Object.keys(s.ignored.author).map((k) => tag("👤 " + k, async () => { await api("/api/ignored/" + encodeURIComponent(k), { method: "DELETE" }); loadSettings(); })));
   if (!ig.children.length) ig.innerHTML = `<span class="hint">пусто</span>`;
-  $("#s-team").innerHTML = s.team.map((m) => `<div class="row"><span>${esc(m.name)}</span><span class="n">${m.user_id}<button class="x" data-rm="${m.user_id}" aria-label="убрать из команды">×</button></span></div>`).join("") || `<div class="empty">пока только вы</div>`;
+  $("#s-team").innerHTML = s.team.map((m) => `<div class="row"><span>${esc(m.name)}</span><span class="n">${m.user_id}${owner ? `<button class="x" data-rm="${m.user_id}" aria-label="убрать из команды">×</button>` : ""}</span></div>`).join("") || `<div class="empty">пока только вы</div>`;
   $$("[data-rm]", $("#s-team")).forEach((b) => b.onclick = async () => {
     if (!(await confirmAsk("Убрать из команды?"))) return;
     try { renderSettings(await api("/api/settings", { method: "POST", body: JSON.stringify({ team_remove: +b.dataset.rm }) })); haptic.ok(); toast("Убрано"); } catch (e) { haptic.err(); toast(e.message); }
@@ -397,7 +429,7 @@ const saveBrand = () => {
 };
 ["name", "handle", "primary", "accent"].forEach((k) => $("#s-brand-" + k).onchange = saveBrand);
 ["primary", "accent"].forEach((k) => $("#s-brand-" + k).oninput = (e) => { $("#s-brand-" + k + "-hex").textContent = e.target.value; });
-$("#s-ch-telegram").onchange = (e) => { let v = e.target.value.trim(); if (v && !/^[@-]|^https?:/.test(v)) e.target.value = v = "@" + v; autosave({ channels: { telegram: v } }); };
+$("#s-ch-telegram").onchange = (e) => { let v = e.target.value.trim().replace(/^(https?:\/\/)?t\.me\//i, "@").replace(/\/$/, ""); if (v && !/^[@-]/.test(v) && !/^\d+$/.test(v)) v = "@" + v; e.target.value = v; autosave({ channels: { telegram: v } }); };
 $("#s-ch-vk").onchange = (e) => autosave({ channels: { vk: e.target.value.trim() } });
 
 function renderPlatforms(s) {
@@ -428,7 +460,7 @@ function renderIntegrations(s) {
       el.innerHTML = `<div class="integ-head"><div class="integ-main">
           <div class="label"><span class="st">${i.set ? "●" : "○"}</span>${esc(name)}</div>
           <div class="hint">${i.set ? esc(i.masked) + " · " : ""}${esc(detail)}</div>
-          ${i.url ? `<div class="hint link"><a href="${esc(i.url)}">где взять ↗</a></div>` : ""}
+          ${safeHref(i.url) ? `<div class="hint link"><a href="${esc(safeHref(i.url))}">где взять ↗</a></div>` : ""}
         </div><button class="btn-sm" ${canEdit ? "" : "disabled"}>${i.set ? "Заменить" : "Подключить"}</button></div>
         <div class="integ-edit hidden"><div class="add-row"><input type="${i.secret ? "password" : "text"}" placeholder="${i.secret ? "вставьте ключ" : "значение"}" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="btn-sm solid">Сохранить</button></div>${i.set ? `<button class="kill">Убрать</button>` : ""}</div>`;
       $$("a", el).forEach(extLink);
