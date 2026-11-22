@@ -9,13 +9,15 @@ from .base import Source, strip_html
 
 URL = "https://freelance.ru/task"
 MSK = ZoneInfo("Europe/Moscow")
-CARD_RE = re.compile(r'<article class="task-card">(.*?)</article>', re.S)
+# Премиум-карточки идут с классом "task-card task-card--premium" — берём любые
+CARD_RE = re.compile(r'<article class="task-card(?:\s[^"]*)?">(.*?)</article>', re.S)
 TITLE_RE = re.compile(r'<a class="task-card__title-link" href="(/task/view/(\d+))"[^>]*>\s*(.*?)\s*</a>', re.S)
 DESC_RE = re.compile(r'<p class="task-card__desc">(.*?)</p>', re.S)
 CAT_RE = re.compile(r'task-chip--cat">(.*?)</span>', re.S)
 DATE_RE = re.compile(r'title="(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})"')
 BIDS_RE = re.compile(r'fa-comments[^<]*</i>\s*<strong>(\d+)</strong>', re.S)
-BUDGET_RE = re.compile(r'task-card__budget[^"]*">\s*(.*?)\s*</div>', re.S)
+# Ровно блок суммы: рядом стоит подпись class="task-card__budget-lbl" («Гонорар») — её не берём
+BUDGET_RE = re.compile(r'class="task-card__budget(?:\s[^"]*)?">\s*(.*?)\s*</div>', re.S)
 
 
 def parse_freelance_ru_html(body: str) -> list[Lead]:
@@ -33,7 +35,7 @@ def parse_freelance_ru_html(body: str) -> list[Lead]:
         budget = BUDGET_RE.search(card)
         if budget:
             b = strip_html(html.unescape(budget.group(1)))
-            if b and "договор" not in b.lower():
+            if re.search(r"\d", b):  # «Обсуждается индивидуально», «По договорённости» — не сумма
                 text += f"\nГонорар: {b}"
         found = datetime.now(timezone.utc)
         d = DATE_RE.search(card)

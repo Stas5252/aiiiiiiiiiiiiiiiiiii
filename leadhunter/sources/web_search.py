@@ -6,10 +6,14 @@ import httpx
 from ..config import Settings
 from ..models import Lead
 from ..phrases import PhraseProvider
-from .base import Source
+from .base import Source, SourceError
 
 log = logging.getLogger(__name__)
 SERPER = "https://google.serper.dev/search"
+
+
+def is_empty_result(e: Exception) -> bool:
+    return "no results" in str(e).lower()
 
 
 class WebSearchSource(Source):
@@ -37,9 +41,11 @@ class WebSearchSource(Source):
         def search():
             try:
                 return DDGS().text(query, region="ru-ru", timelimit="w", max_results=20)
-            except Exception as e:  # ddgs кидает исключение на пустую выдачу
-                log.debug("ddgs %r: %s", query, e)
-                return []
+            except Exception as e:
+                # Пустую выдачу ddgs тоже отдаёт исключением — её от блокировки/таймаута отличаем по тексту
+                if is_empty_result(e):
+                    return []
+                raise SourceError(f"DuckDuckGo не ответил на запрос ({type(e).__name__}: {e})"[:200]) from e
 
         rows = await asyncio.to_thread(search)
         return [{"title": r.get("title", ""), "url": r.get("href", ""), "text": r.get("body", "")} for r in rows]

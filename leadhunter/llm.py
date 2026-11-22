@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -33,6 +34,37 @@ class Verdict:
     reply_draft: str = ""
 
 
+_TRUE = {"true", "yes", "y", "да", "1", "лид"}
+_FALSE = {"false", "no", "n", "нет", "0", "не лид", "null", "none", ""}
+
+
+def parse_bool(value) -> bool:
+    """«false» и «нет» строкой — это «нет», а не непустая строка. Непонятный ответ считаем отказом."""
+    if isinstance(value, str):
+        v = value.strip().strip(".!\"'").lower()
+        if v in _TRUE:
+            return True
+        if v not in _FALSE:
+            log.warning("LLM: непонятное значение is_lead=%r, считаю «нет»", value)
+        return False
+    return bool(value)
+
+
+def parse_score(value) -> int:
+    """7, "7", "8/10", 7.6 → целое 0..10."""
+    if isinstance(value, str):
+        m = re.search(r"\d+(?:[.,]\d+)?", value)
+        value = float(m.group().replace(",", ".")) if m else 0
+    try:
+        return max(0, min(10, int(round(float(value or 0)))))
+    except (TypeError, ValueError):
+        return 0
+
+
+class LLMQuotaError(RuntimeError):
+    """Часовой лимит вызовов ИИ исчерпан."""
+
+
 def _strip_fence(s: str) -> str:
     """Некоторые модели оборачивают JSON в ```json … ``` даже при response_format."""
     s = s.strip()
@@ -58,6 +90,7 @@ class LLMClassifier:
         self.fallback_model = fallback_model  # на 429/503 основной модели повторяем запрос на ней
         self.max_per_hour = max_per_hour
         self._calls: deque[float] = deque()
+        self._refused = False
         self.client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), headers={"Authorization": f"Bearer {api_key}"}, timeout=120
         )
@@ -67,15 +100,34 @@ class LLMClassifier:
         while self._calls and now - self._calls[0] > 3600:
             self._calls.popleft()
         if len(self._calls) >= self.max_per_hour:
+            self._refused = True
             return False
+        self._refused = False
         self._calls.append(now)
         return True
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """Последний запрос не ушёл из-за часового лимита и лимит ещё действует."""
+        if not self._refused:
+            return False
+        now = time.monotonic()
+        while self._calls and now - self._calls[0] > 3600:
+            self._calls.popleft()
+        self._refused = len(self._calls) >= self.max_per_hour
+        return self._refused
+
+    def quota_resets_in(self) -> int:
+        """Через сколько минут освободится первый вызов."""
+        if not self._calls:
+            return 0
+        return max(1, int((3600 - (time.monotonic() - self._calls[0])) // 60) + 1)
 
     async def complete_json(self, system: str, user: str, *, temperature: float = 0.7,
                             max_tokens: int | None = None) -> dict:
         """Любой запрос «верни JSON» — на нём работают контент-фабрика и генерация фраз. Бросает исключение при ошибке."""
         if not self._allowed():
-            raise RuntimeError(f"лимит {self.max_per_hour} вызовов ИИ в час исчерпан")
+            raise LLMQuotaError(f"лимит {self.max_per_hour} вызовов ИИ в час исчерпан")
         payload = {
             "model": self.model,
             "temperature": temperature,
@@ -98,14 +150,17 @@ class LLMClassifier:
         try:
             data = await self.complete_json(system, text[:4000], temperature=0)
             return Verdict(
-                is_lead=bool(data.get("is_lead")),
-                score=max(0, min(10, int(data.get("score") or 0))),
+                is_lead=parse_bool(data.get("is_lead")),
+                score=parse_score(data.get("score")),
                 service=str(data.get("service") or ""),
                 summary=str(data.get("summary") or ""),
                 urgency=str(data.get("urgency") or ""),
                 budget=str(data.get("budget") or "") if data.get("budget") else "",
                 reply_draft=str(data.get("reply_draft") or ""),
             )
+        except LLMQuotaError as e:
+            log.warning("LLM: %s — лид оценивается по словарю", e)
+            return None
         except Exception:
             # Ошибка ИИ не должна терять лид — пайплайн откатится на ключевые слова
             log.exception("LLM classification failed")
