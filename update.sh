@@ -48,7 +48,8 @@ fi
 
 BAD_ENV="Новая версия не принимает настройки из .env (что именно — выше). Бот не перезапущен и работает на старой версии. Исправьте .env и запустите ./update.sh снова."
 
-if [ -n "$DOCKER_CMD" ] && [ -n "$(dk compose ps -a -q 2>/dev/null || true)" ]; then
+# Только работающий контейнер: остановленный остаётся после перехода на Python, поднимать его нельзя
+if [ -n "$DOCKER_CMD" ] && [ -n "$(dk compose ps -q 2>/dev/null || true)" ]; then
     dk compose build || die "Docker не смог собрать новую версию (ошибка выше). Бот работает на старой."
     dk compose run --rm --no-deps -T leadhunter python -m leadhunter.config || die "$BAD_ENV"
     dk compose up -d
@@ -63,5 +64,5 @@ elif [ -x .venv/bin/pip ]; then
         echo "✅ Код обновлён. Перезапустите бота: остановите его (Ctrl+C) и запустите заново: .venv/bin/python -m leadhunter"
     fi
 else
-    die "Не нашёл ни Docker-контейнера, ни .venv. Сначала запустите ./install.sh"
+    die "Не нашёл ни запущенного Docker-контейнера, ни .venv. Сначала запустите ./install.sh"
 fi
