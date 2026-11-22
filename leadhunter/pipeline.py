@@ -11,7 +11,7 @@ from .filters import evaluate
 from .freshness import Freshness, check as freshness_check
 from .geo import geo_allows
 from .llm import LLMClassifier
-from .models import Lead
+from .models import SOURCE_SETTINGS, Lead
 from .scoring import ScoreResult, score_text
 
 log = logging.getLogger(__name__)
@@ -35,7 +35,6 @@ class Notifier(Protocol):
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None: ...
 
 
-SOURCE_SETTINGS = {'kwork': ('leads_boards', '1'), 'rss': ('leads_boards', '1'), 'weblancer': ('leads_boards', '1'), 'freelance.ru': ('leads_boards', '1'), 'telegram': ('leads_social', '1'), 'vk': ('leads_social', '1'), 'threads': ('leads_social', '1'), 'instagram': ('leads_social', '1'), 'hh.ru': ('leads_jobs', '0'), 'yandex_maps': ('leads_maps', '1'), 'site_audit': ('leads_maps', '1'), 'web': ('leads_web', '0')}
 
 
 class Pipeline:

@@ -4,9 +4,20 @@ import httpx
 
 from ..config import Settings
 from ..models import Lead
-from .base import Source, strip_html
+from .base import Source, SourceError, strip_html
 
 API = "https://api.hh.ru/vacancies"
+# Заглушка из настроек по умолчанию: hh.ru держит её в чёрном списке и отвечает 400 bad_user_agent
+PLACEHOLDER_UA = "contact@example.com"
+
+
+def explain_error(status: int, body: str) -> str:
+    """Понятная причина отказа hh.ru вместо «400 Bad Request»."""
+    if status == 400 and "bad_user_agent" in body:
+        return "hh.ru отклонил User-Agent — задайте свой HH_USER_AGENT вида «Название/1.0 (ваша@почта)»"
+    if status == 403:
+        return "hh.ru закрыл доступ с этого IP (блокирует дата-центры) — нужен прокси или домашний IP"
+    return f"hh.ru ответил {status}"
 
 
 def parse_vacancies(data: dict) -> list[Lead]:
@@ -35,11 +46,17 @@ class HHSource(Source):
         self.interval = s.hh_interval
         self.ua = s.hh_user_agent
 
+    def blocked_reason(self) -> str:
+        if not self.ua.strip() or PLACEHOLDER_UA in self.ua:
+            return "не задан свой HH_USER_AGENT — с заглушкой hh.ru отвечает отказом"
+        return ""
+
     async def poll(self) -> list[Lead]:
         leads: list[Lead] = []
         async with httpx.AsyncClient(timeout=30, headers={"User-Agent": self.ua}) as c:
             for q in self.queries:
                 r = await c.get(API, params={"text": q, "per_page": 50, "order_by": "publication_time", "period": 1})
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    raise SourceError(explain_error(r.status_code, r.text))
                 leads += parse_vacancies(r.json())
         return leads

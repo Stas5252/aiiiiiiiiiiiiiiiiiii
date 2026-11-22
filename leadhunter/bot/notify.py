@@ -80,6 +80,8 @@ def format_lead(lead_id: int, lead: Lead, info: Enriched) -> str:
     lines = [head]
     if lead.title:
         lines.append(f"<b>{e(lead.title[:200])}</b>")
+    if lead.extra.get("chat_title"):
+        lines.append(f"💬 Чат: {e(str(lead.extra['chat_title'])[:100])}")
     if info.summary:
         lines.append(f"🤖 {e(info.summary)}")
     lines.append(e(lead.text[:900]) + ("…" if len(lead.text) > 900 else ""))

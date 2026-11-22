@@ -1,5 +1,6 @@
 from ..config import Settings
 from ..db import Database
+from ..models import SOURCE_SETTINGS
 from ..phrases import PhraseProvider
 from .base import Source
 from .freelance_ru import FreelanceRuSource
@@ -69,4 +70,13 @@ def build_sources(s: Settings, db: Database, phrases: PhraseProvider) -> list[So
     for src in sources:
         src.work_hours = s.work_hours
         src.tz = s.digest_tz
+        setting = SOURCE_SETTINGS.get(src.name)
+        if setting:
+            src.enabled = _group_switch(db, *setting)
     return sources
+
+
+def _group_switch(db: Database, key: str, default: str):
+    async def enabled() -> bool:
+        return await db.get_setting(key, default) == "1"
+    return enabled
