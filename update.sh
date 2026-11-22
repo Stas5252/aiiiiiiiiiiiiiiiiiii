@@ -15,12 +15,15 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 echo "⬇️  Забираю обновления…"
-if ! out="$(git fetch 2>&1)"; then
+# --prune: если ветку на сервере удалили, узнаём об этом, а не «обновляемся» до старой версии
+if ! out="$(git fetch --prune 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/    /' >&2
     die "Не удалось связаться с сервером обновлений: нет интернета или доступа к репозиторию. Проверьте связь и запустите снова."
 fi
 upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-if [ -z "$upstream" ]; then die "Эта копия не привязана к ветке на сервере (git status покажет, где вы). Переключитесь на основную ветку и запустите снова."; fi
+if [ -z "$upstream" ]; then
+    die "Ветки, с которой ставился бот, на сервере нет: её удалили или эта копия к ней не привязана. Запустите команду установки из README заново, добавив перед bash: LEADHUNTER_DIR=\"$PWD\" LEADHUNTER_BRANCH=название_ветки — настройки и база останутся на месте."
+fi
 if ! out="$(git merge --ff-only "$upstream" 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/    /' >&2
     changed="$(git status --porcelain --untracked-files=no | cut -c4- | head -5 | tr '\n' ' ')"
