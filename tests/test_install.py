@@ -565,6 +565,24 @@ def test_switch_to_python_stops_running_container(box):
     assert calls.index("docker compose down") < calls.index("systemctl restart leadhunter")
 
 
+@pytest.mark.parametrize("mode, logs", [("docker", "compose logs"), ("systemd", "journalctl -u leadhunter"), ("manual", "")])
+def test_install_final_message_explains_owner_code(box, mode, logs):
+    """Владельцем становятся по одноразовому коду из лога (модуль C), а не первым /start — установщик это объясняет."""
+    if mode == "docker":
+        res = box.have("curl", "docker").run()
+    elif mode == "systemd":
+        res = box.systemd().run(LEADHUNTER_NO_DOCKER="1")
+    else:
+        res = box.run(LEADHUNTER_NO_DOCKER="1")
+    assert res.returncode == 0, res.text
+    assert "Код владельца" in res.text and "/start КОД" in res.text and logs in res.text
+
+
+def test_install_final_message_with_owner_ids_set(box):
+    (box.proj / ".env").write_text(f"BOT_TOKEN={TOKEN}\nOWNER_IDS=12345\n", encoding="utf-8")
+    res = box.have("curl", "docker").run()
+    assert res.returncode == 0, res.text
+    assert "Код владельца" not in res.text and "/start" in res.text
 
 
 def test_install_systemd_start_failure_is_not_fatal(box):

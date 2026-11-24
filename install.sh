@@ -254,6 +254,7 @@ stop_service() {
 }
 
 STARTED=0
+LOG_CMD=""
 run_docker() {
     say "Собираю образ Docker (первая сборка занимает 3–10 минут)"
     dk compose build || die "Docker не смог собрать образ (ошибка выше). Можно поставить без Docker: LEADHUNTER_NO_DOCKER=1 ./install.sh"
@@ -262,6 +263,7 @@ run_docker() {
     stop_service
     dk compose up -d || die "Не удалось запустить контейнер (ошибка выше)."
     STARTED=1
+    LOG_CMD="cd '$SELF_DIR' && $DOCKER_CMD compose logs | grep 'Код владельца' | tail -1"
     ok "Контейнер запущен"
     echo "  Логи: $DOCKER_CMD compose logs -f    Остановить: $DOCKER_CMD compose down"
 }
@@ -388,6 +390,7 @@ UNIT
     # restart, а не enable --now: при повторной установке служба уже работает и должна перейти на новый код
     if as_root systemctl daemon-reload && as_root systemctl enable leadhunter && as_root systemctl restart leadhunter; then
         STARTED=1
+        LOG_CMD="journalctl -u leadhunter | grep 'Код владельца' | tail -1"
         ok "Служба запущена. Логи: journalctl -u leadhunter -f"
     else
         warn "Служба systemd не запустилась — запускайте бота вручную (команда ниже)."
@@ -431,12 +434,27 @@ else
 fi
 
 if [ "$STARTED" = 1 ]; then
-    say "Готово: бот запущен — напишите ему /start"
+    say "Готово: бот запущен"
 else
     say "Установка завершена, но бот ещё не запущен"
     echo "  Запустите его этой командой и не закрывайте окно терминала:"
     echo "    $RUN_CMD"
-    echo "  Когда бот запустится, напишите ему /start."
+    echo "  Если бот уже работает в другом окне — сначала остановите его там (Ctrl+C), иначе он останется на старом коде."
+fi
+# Владельцем становятся не первым /start, а по одноразовому коду из лога (или по OWNER_IDS в .env)
+if [ -n "$(get_env OWNER_IDS)" ]; then
+    echo "  Владелец указан в .env (OWNER_IDS) — просто напишите боту /start."
+else
+    echo "  Остался один шаг — подтвердить, что бот ваш (посторонним он не отвечает):"
+    if [ -n "$LOG_CMD" ]; then
+        echo "    1. Найдите в логе бота строку «Код владельца»:"
+        echo "         $LOG_CMD"
+    else
+        echo "    1. В окне, где запущен бот, найдите строку «Код владельца»."
+    fi
+    echo "    2. Пришлите этот код боту в личку: /start КОД"
+    echo "  Код одноразовый и меняется при каждом перезапуске. Если бот вам уже отвечает — этот шаг не нужен."
+    echo "  Вместо кода можно вписать в .env строку OWNER_IDS=ваш_id (id бот подскажет в ответ на /start) и перезапустить бота."
 fi
 echo "  Дальше в боте: выберите нишу кнопкой → /setup (ключ ИИ) → кнопка «Кабинет»."
 echo "  Обновление:   ./update.sh"
