@@ -216,6 +216,9 @@ async def test_local_address_from_lead_text_is_never_requested(monkeypatch):
     ("Писать на почту anna@firma.ru", ""),
     ("Перенести www.старый-сайт.рф на Tilda", "www.старый-сайт.рф"),
     ("Нужен парсер на Node.js и Vue.js, опыт с ASP.NET", ""),
+    ("Доработать shop.example.ru", "shop.example.ru"),
+    ("Магазин на my.shop.example.ru, CMS своя", "my.shop.example.ru"),
+    ("Почта anna.petrova@mail.firma.ru", ""),
 ])
 def test_client_site_is_taken_from_order_text(text, site):
     assert site_from_text(text) == site
