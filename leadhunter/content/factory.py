@@ -179,6 +179,9 @@ class ContentFactory:
             except Exception as e:
                 log.warning("мультик не собрался: %s", e)
                 media["error"] = error_text(e, 300)
+        elif row["kind"] == "aivideo" and not await features.enabled(self.db, "format_aivideo"):
+            # старый черновик при выключенном ИИ-видео: пересборка не должна тратить платные запросы
+            media["error"] = "ИИ-видео выключено в настройках — включите его в кабинете, чтобы пересобрать"
         elif row["kind"] == "aivideo":
             voice = _Voice(self.ai)
             try:

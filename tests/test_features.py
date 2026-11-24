@@ -102,3 +102,64 @@ async def test_cabinet_api_reports_defaults_and_hides_switched_off_formats(tmp_p
     finally:
         await w.client.close()
         await w.db.close()
+
+
+async def test_idea_in_switched_off_format_becomes_first_enabled_format(db):
+    class LLM:
+        async def complete_json(self, system, user, temperature=0.8):
+            return {"ideas": [{"topic": "Чек-лист запуска", "kind": "magnet"}]}
+
+    store = ContentStore(db)
+    await store.init()
+    gen = ContentGenerator(LLM(), store, db, "Студия: сайты и боты")
+    await db.set_setting("format_post", "0")
+    assert await gen.idea_kinds() == ["carousel", "reel"]
+    assert (await gen.generate("ideas", ""))["ideas"][0]["kind"] == "carousel"
+
+
+async def test_autopilot_does_not_fall_back_to_switched_off_post(tmp_path):
+    import json
+    from datetime import datetime, timezone
+
+    from leadhunter.content.scheduler import autopilot_once
+    from test_miniapp_hardening import make_world
+
+    w = await make_world(tmp_path)
+    try:
+        await w.db.set_setting("autopilot", "1")
+        await w.db.set_setting("format_post", "0")
+        await w.factory.store.add("idea", "Пять ошибок | первая | вторая", body=json.dumps({"topic": "Пять ошибок"}),
+                                  platforms="magnet", scheduled_at=datetime.now(timezone.utc).isoformat())
+        made = []
+
+        async def deliver(row):
+            made.append(row["kind"])
+
+        assert await autopilot_once(w.factory, deliver, "UTC", 0) is not None
+        assert made == ["carousel"]
+    finally:
+        await w.client.close()
+        await w.db.close()
+
+
+async def test_rebuild_of_old_ai_video_draft_sends_no_paid_requests(tmp_path):
+    import json
+
+    from test_miniapp_hardening import make_world
+
+    class VideoAI:
+        video_enabled, calls = True, 0
+
+        async def video(self, prompt, aspect="9:16"):
+            self.calls += 1
+            raise AssertionError("платный запрос при выключенном ИИ-видео")
+
+    w = await make_world(tmp_path)
+    try:
+        w.factory.video_ai = VideoAI()
+        item_id = await w.factory.store.add("aivideo", "тема", body=json.dumps({"title": "т", "clips": [{"prompt": "кот", "line": "мяу"}]}))
+        media = await w.factory.render(item_id)
+        assert "выключено" in media["error"] and w.factory.video_ai.calls == 0
+    finally:
+        await w.client.close()
+        await w.db.close()
