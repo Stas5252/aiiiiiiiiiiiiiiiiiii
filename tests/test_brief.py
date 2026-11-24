@@ -172,6 +172,26 @@ async def test_owner_rule_beats_minimum_budget(db):
     assert await Pipeline(db, notifier, default_threshold=1).handle(lead("Нужна визитка для мастера, бюджет 3000 руб"))
 
 
+async def test_ai_is_not_told_the_minimum_for_order_matched_by_owner_rule(db):
+    class Strict(FakeLLM):
+        """Как настоящий ИИ: отклоняет заказ дешевле минимального, если минимум есть в брифе."""
+
+        async def classify(self, text, profile, good=(), bad=()):
+            verdict = await super().classify(text, profile, good, bad)
+            verdict.is_lead = "Минимальный заказ" not in profile
+            return verdict
+
+    notifier, llm = Notifier(), Strict()
+    await brief.save(db, FILLED)
+    await db.add_rule("+визитка")
+    p = Pipeline(db, notifier, llm=llm, default_threshold=1)
+    assert await p.handle(lead("Нужна визитка для мастера, бюджет 3000 руб", "1"))
+    assert "Минимальный заказ" not in llm.profiles[0] and "Кейсы: Сайт стоматологии" in llm.profiles[0]
+    # без правила ИИ видит минимум и сам отклоняет заказ с бюджетом «тысячи три», который не разобрать числом
+    assert not await p.handle(lead("Нужен сайт для кафе, бюджет небольшой, тысячи три", "2"))
+    assert "Минимальный заказ: 10000 ₽" in llm.profiles[1]
+
+
 async def test_ai_gets_brief_and_card_shows_why_it_fits(db):
     notifier, llm = Notifier(), FakeLLM()
     await brief.save(db, FILLED)

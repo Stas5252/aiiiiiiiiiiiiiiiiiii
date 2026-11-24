@@ -224,7 +224,8 @@ class Pipeline:
                 bio = await self.author_bio(int(lead.extra["sender_id"]))
             except Exception:
                 log.debug("bio fetch failed", exc_info=True)
-        profile = await brief.profile(self.db, self.default_profile)
+        # Правило владельца сильнее минимального заказа из брифа: такому заказу ИИ минимум не показываем
+        profile = await brief.profile(self.db, self.default_profile, with_min=not rule)
         good = [r["text"] for r in await self.db.leads_by_status("hot", 5)]
         bad = [r["text"] for r in await self.db.leads_by_status("spam", 5)]
         text = lead.full_text + (f"\n\n[Об авторе: {bio}]" if bio else "")

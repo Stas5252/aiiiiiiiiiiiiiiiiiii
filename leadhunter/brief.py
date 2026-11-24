@@ -113,8 +113,11 @@ def min_budget(data: dict) -> int:
     return int(data["min_budget"]) if (data.get("min_budget") or "").isdigit() else 0
 
 
-def text(data: dict, fallback: str = "") -> str:
-    """Бриф одним текстом для ИИ. Услуги не заполнены — вместо них старое описание «что продаём»."""
+def text(data: dict, fallback: str = "", *, with_min: bool = True) -> str:
+    """Бриф одним текстом для ИИ. Услуги не заполнены — вместо них старое описание «что продаём».
+    with_min=False — без минимального заказа: так ИИ оценивает заказ, который владелец взял своим правилом."""
+    if not with_min:
+        data = {**data, "min_budget": ""}
     if not filled(data):
         return fallback
     lines = []
@@ -129,10 +132,10 @@ def text(data: dict, fallback: str = "") -> str:
     return "\n".join(lines)
 
 
-async def profile(db, default: str = "") -> str:
+async def profile(db, default: str = "", *, with_min: bool = True) -> str:
     """Что видит ИИ об исполнителе: бриф, а пока он пуст — описание из /profile."""
     old = await db.get_setting("profile", default) or default
-    return text(await load(db), old)
+    return text(await load(db), old, with_min=with_min)
 
 
 def below_min(lead_text: str, data: dict) -> bool:
