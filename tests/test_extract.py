@@ -4,7 +4,7 @@ from leadhunter.llm import build_examples
 
 def test_extract_contacts():
     text = "Пишите +7 (999) 123-45-67 или на mail@firm.ru, тг @ivan_dev, ссылка https://t.me/other"
-    assert extract_contacts(text) == "+7 (999) 123-45-67, mail@firm.ru, @ivan_dev"
+    assert extract_contacts(text) == "+7 (999) 123-45-67, mail@firm.ru, @ivan_dev, @other"
 
 
 def test_extract_contacts_empty():

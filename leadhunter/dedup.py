@@ -41,3 +41,12 @@ class NearDuplicateIndex:
                     return True
         self._items.append((now, sh))
         return False
+
+    def add(self, text: str, at: float | None = None) -> None:
+        """Запомнить текст без проверки — прогрев индекса из базы после перезапуска."""
+        at = time.time() if at is None else at
+        if time.time() - at <= self.ttl:
+            self._items.append((at, shingles(text)))
+
+    def __len__(self) -> int:
+        return len(self._items)

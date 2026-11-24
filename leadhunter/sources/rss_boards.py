@@ -1,6 +1,6 @@
 import asyncio
+from calendar import timegm
 from datetime import datetime, timezone
-from time import mktime
 from urllib.parse import urlparse
 
 import feedparser
@@ -25,7 +25,7 @@ def parse_feed(raw: bytes, feed_url: str) -> list[Lead]:
             continue
         found_at = datetime.now(timezone.utc)
         if e.get("published_parsed"):
-            found_at = datetime.fromtimestamp(mktime(e.published_parsed), tz=timezone.utc)
+            found_at = datetime.fromtimestamp(timegm(e.published_parsed), tz=timezone.utc)  # feedparser отдаёт время в UTC
         leads.append(Lead(
             source=f"rss:{host}",
             external_id=ext_id,
