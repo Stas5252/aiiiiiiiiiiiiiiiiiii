@@ -78,7 +78,7 @@ def audited(monkeypatch):
     """Аудит сайтов без сети: у каждого сайта «проблема», список проверенных адресов запоминается."""
     seen = []
 
-    async def fake_audit(site, proxy=None, timeout=15):
+    async def fake_audit(site, timeout=15):
         seen.append(site)
         return "без HTTPS"
 
@@ -163,6 +163,22 @@ def test_api_source_treats_social_page_as_no_site():
     ]}
     (lead,) = parse_features(data, "ногтевая студия", "Саратов")
     assert lead.external_id == "2" and "страница на vk.com" in lead.text
+
+
+async def test_site_audit_never_opens_local_address(monkeypatch):
+    """Ссылку в карточку вписывает сама компания: адрес из внутренней сети (и переадресация на него) не открывается."""
+    from leadhunter import brief
+    from leadhunter.audit import audit_site
+
+    asked = []
+
+    async def resolve(host, port):
+        asked.append(host)
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr(brief, "_resolve", resolve)
+    assert await audit_site("http://router.example/admin") == "сайт не открывается (адрес не из интернета)"
+    assert asked == ["router.example"]
 
 
 # --- вся Россия: города и рубрики ---

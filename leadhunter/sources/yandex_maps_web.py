@@ -114,7 +114,7 @@ class YandexMapsWebSource(Source):
 
             async def check(item, site, city):
                 async with sem:
-                    problem = await audit_site(site, self.proxy)
+                    problem = await audit_site(site)
                 return audit_lead(item, site, problem, city) if problem else None
 
             results = await asyncio.gather(*(check(*t) for t in queue), return_exceptions=True)
