@@ -2,7 +2,7 @@
 # Установщик LeadHunter «для чайников»: спросит токен бота, поставит всё нужное и запустит.
 # Запуск:  curl -fsSL https://raw.githubusercontent.com/Stas5252/aiiiiiiiiiiiiiiiiiii/main/install.sh | bash
 # Для автоматики (без вопросов): BOT_TOKEN=... [GEMINI_API_KEY=...] LEADHUNTER_YES=1 ./install.sh
-# Ещё переменные: LEADHUNTER_NO_DOCKER=1 — ставить через Python, Docker не трогать;
+# Ещё переменные: LEADHUNTER_NO_DOCKER=1 — ставить через Python, Docker не устанавливать;
 #   LEADHUNTER_ENV_ONLY=1 — только подготовить .env; LEADHUNTER_SKIP_NET=1 — не проверять токен в Telegram;
 #   LEADHUNTER_DIR, LEADHUNTER_REPO, LEADHUNTER_BRANCH — куда и откуда скачивать код
 #   (LEADHUNTER_BRANCH при повторном запуске переключает уже скачанный проект на эту ветку).
@@ -235,12 +235,31 @@ install_docker() { # 1 — если Docker поставить не вышло (�
     if [ -n "$SUDO" ]; then sudo usermod -aG docker "$(id -un)" 2>/dev/null || true; fi
 }
 
+# Работает ли контейнер бота (остановленный не в счёт)
+container_running() { [ -n "$(dk compose ps -q 2>/dev/null || true)" ]; }
+
+UNIT="$ROOT/etc/systemd/system/leadhunter.service"
+
+# Два бота на одном токене отбирают друг у друга сообщения, поэтому при смене режима прежний останавливаем.
+stop_container() {
+    if docker_ready && container_running; then
+        warn "Останавливаю контейнер Docker: бот переходит на Python, а двух ботов на одном токене быть не должно."
+        dk compose down || warn "Контейнер не остановился — остановите его сами: $DOCKER_CMD compose down"
+    fi
+}
+stop_service() {
+    if [ ! -f "$UNIT" ] || ! command -v systemctl >/dev/null 2>&1; then return 0; fi
+    warn "Останавливаю службу leadhunter (Python): бот переходит в Docker, а двух ботов на одном токене быть не должно."
+    as_root systemctl disable --now leadhunter || warn "Служба не остановилась — остановите её сами: systemctl disable --now leadhunter"
+}
+
 STARTED=0
 run_docker() {
     say "Собираю образ Docker (первая сборка занимает 3–10 минут)"
     dk compose build || die "Docker не смог собрать образ (ошибка выше). Можно поставить без Docker: LEADHUNTER_NO_DOCKER=1 ./install.sh"
     dk compose run --rm --no-deps -T leadhunter python -m leadhunter.config \
         || die "Бот не принимает настройки из .env (что именно — выше). Исправьте файл и запустите ./install.sh снова."
+    stop_service
     dk compose up -d || die "Не удалось запустить контейнер (ошибка выше)."
     STARTED=1
     ok "Контейнер запущен"
@@ -310,6 +329,7 @@ run_python() {
     mkdir -p data
     .venv/bin/python -m leadhunter.config \
         || die "Бот не принимает настройки из .env (что именно — выше). Исправьте файл и запустите ./install.sh снова."
+    stop_container
     write_service
 }
 
@@ -345,9 +365,8 @@ write_service() {
         return 0
     fi
     confirm "Запускать бота автоматически при старте сервера (systemd)?" y || return 0
-    local user unit="$ROOT/etc/systemd/system/leadhunter.service"
-    user="$(id -un)"
-    if ! as_root tee "$unit" >/dev/null <<UNIT
+    local user; user="$(id -un)"
+    if ! as_root tee "$UNIT" >/dev/null <<UNIT
 [Unit]
 Description=LeadHunter
 After=network-online.target
@@ -382,6 +401,14 @@ setup_env
 if [ -n "${LEADHUNTER_ENV_ONLY:-}" ]; then ok "Только .env (LEADHUNTER_ENV_ONLY)"; exit 0; fi
 
 if [ -n "${LEADHUNTER_NO_DOCKER:-}" ]; then
+    run_python
+elif docker_ready && container_running; then
+    ok "Бот уже работает в Docker — обновляю контейнер"
+    run_docker
+elif [ -x .venv/bin/pip ]; then
+    # Бот уже ставился через Python: контейнер рядом с ним дал бы двух ботов на одном токене
+    ok "Бот уже установлен через Python — остаюсь в этом режиме."
+    echo "  (Перейти на Docker: удалите папку .venv и запустите ./install.sh снова.)"
     run_python
 elif docker_ready; then
     ok "Docker найден"

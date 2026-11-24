@@ -483,7 +483,8 @@ def test_install_no_docker_flag(box):
     """№6: LEADHUNTER_NO_DOCKER=1 — Python-режим без вопросов, даже если Docker есть."""
     res = box.have("curl", "docker").run(LEADHUNTER_NO_DOCKER="1")
     assert res.returncode == 0, res.text
-    assert not box.called("docker") and not [c for c in box.called("curl") if "get.docker.com" in c]
+    assert not box.called("docker compose up") and not box.called("docker compose build")
+    assert not box.called("docker compose down") and not [c for c in box.called("curl") if "get.docker.com" in c]
     assert box.called("pip install")
 
 
@@ -516,10 +517,52 @@ def test_install_systemd_service(box):
     assert "бот запущен" in res.text and "ещё не запущен" not in res.text
 
 
+def python_install(box):
+    """Следы прежней установки через Python: готовая .venv в папке проекта."""
+    (box.proj / ".venv/bin").mkdir(parents=True)
+    for tool in ("pip", "python", "patchright"):
+        shutil.copy(box.stubs / "venvtool", box.proj / ".venv/bin" / tool)
+    return box
 
 
+def test_reinstall_keeps_python_mode_when_docker_is_available(box):
+    """Бот уже работает службой через Python: повторный ./install.sh не поднимает рядом контейнер (два бота на токен)."""
+    res = python_install(box).have("curl", "docker").systemd().run()
+    assert res.returncode == 0, res.text
+    assert not box.called("docker compose up") and not box.called("docker compose build")
+    assert box.called("pip install") and box.called("systemctl restart leadhunter")
 
 
+def test_reinstall_python_mode_does_not_install_docker(box):
+    res = python_install(box).have("curl").systemd().run()
+    assert res.returncode == 0, res.text
+    assert not [c for c in box.called("curl") if "get.docker.com" in c] and box.called("systemctl restart leadhunter")
+
+
+def test_reinstall_keeps_docker_mode_when_container_runs(box):
+    """Контейнер работает — остаёмся в Docker, даже если в папке лежит .venv."""
+    res = python_install(box).have("curl", "docker").systemd().run(FAKE_COMPOSE_PS="abc123")
+    assert res.returncode == 0, res.text
+    assert box.called("docker compose up -d") and not box.called("systemctl")
+
+
+def test_switch_to_docker_stops_python_service(box):
+    """Переход с Python на Docker (.venv удалена, служба осталась): служба останавливается до запуска контейнера."""
+    (box.root / "etc/systemd/system/leadhunter.service").write_text("[Unit]\n")
+    res = box.have("curl", "docker").systemd().run()
+    assert res.returncode == 0, res.text
+    calls = box.calls
+    assert "systemctl disable --now leadhunter" in calls and not box.called("systemctl restart")
+    assert calls.index("systemctl disable --now leadhunter") < calls.index("docker compose up -d")
+
+
+def test_switch_to_python_stops_running_container(box):
+    """Переход с Docker на Python по LEADHUNTER_NO_DOCKER=1: контейнер останавливается до запуска службы."""
+    res = box.have("curl", "docker").systemd().run(LEADHUNTER_NO_DOCKER="1", FAKE_COMPOSE_PS="abc123")
+    assert res.returncode == 0, res.text
+    calls = box.calls
+    assert "docker compose down" in calls and not box.called("docker compose up")
+    assert calls.index("docker compose down") < calls.index("systemctl restart leadhunter")
 
 
 
