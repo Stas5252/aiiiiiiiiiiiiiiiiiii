@@ -2,6 +2,7 @@
 Номера в названиях тестов — находки из docs/audit/02_bot_miniapp.md."""
 import asyncio
 import json
+import re
 import time
 
 import pytest
@@ -116,11 +117,12 @@ class FakeGroupBot:
     """Вместо Telegram: отвечает, кто сейчас состоит в рабочей группе."""
 
     def __init__(self, statuses: dict[int, str]):
-        self.statuses, self.down, self.asked = statuses, False, []
+        self.statuses, self.down, self.asked, self.delay = statuses, False, [], 0.0
 
     async def get_chat_member(self, chat_id, user_id):
         from types import SimpleNamespace
         self.asked.append((chat_id, user_id))
+        await asyncio.sleep(self.delay)  # ответ Telegram приходит не мгновенно
         if self.down:
             raise RuntimeError("Telegram недоступен")
         return SimpleNamespace(status=self.statuses.get(user_id, "left"), is_member=False)
@@ -412,6 +414,59 @@ async def test_v2_without_workspace_group_team_table_decides(w):
     assert "команд" in await error_of(await w.client.get("/api/me", headers=auth(999)), 403)
 
 
+TODAY_REQUESTS = ("/api/stats?days=1", "/api/leads?status=new,hot&limit=20", "/api/leads?status=open&mine=1&limit=20", "/api/me")
+
+
+async def test_v2_parallel_cabinet_requests_ask_telegram_once(grouped):
+    """Экран «Сегодня» шлёт четыре запроса сразу — Telegram о членстве спрашиваем один раз на человека."""
+    w, bot = grouped, grouped.bot
+    bot.delay = 0.05
+    rs = await asyncio.gather(*(w.client.get(p, headers=auth(MEMBER)) for p in TODAY_REQUESTS))
+    assert [r.status for r in rs] == [200] * 4
+    assert bot.asked == [(GROUP, MEMBER)]
+    # два разных человека одновременно — по одному запросу на каждого
+    bot.asked.clear()
+    w.api.guard.member_ttl = 0
+    rs = await asyncio.gather(*(w.client.get(p, headers=auth(uid)) for p in TODAY_REQUESTS for uid in (MEMBER, MEMBER2)))
+    assert [r.status for r in rs] == [200] * 8
+    assert sorted(bot.asked) == [(GROUP, MEMBER), (GROUP, MEMBER2)]
+    # следующий заход после истечения кэша спрашивает заново, а не раздаёт старый ответ вечно
+    bot.asked.clear()
+    assert (await w.client.get("/api/me", headers=auth(MEMBER))).status == 200
+    assert bot.asked == [(GROUP, MEMBER)]
+
+
+async def test_v2_parallel_requests_of_left_member_ask_once_and_all_denied(grouped):
+    w, bot = grouped, grouped.bot
+    bot.delay = 0.05
+    bot.statuses[MEMBER] = "left"
+    rs = await asyncio.gather(*(w.client.get(p, headers=auth(MEMBER)) for p in TODAY_REQUESTS))
+    assert [r.status for r in rs] == [403] * 4
+    assert bot.asked == [(GROUP, MEMBER)] and not await w.db.is_member(MEMBER)
+
+
+async def test_v2_parallel_requests_with_telegram_down_ask_once_and_never_grant(grouped):
+    w, bot = grouped, grouped.bot
+    bot.delay, bot.down = 0.05, True
+    rs = await asyncio.gather(*(w.client.get(p, headers=auth(MEMBER)) for p in TODAY_REQUESTS))
+    assert [r.status for r in rs] == [403] * 4
+    assert bot.asked == [(GROUP, MEMBER)] and await w.db.is_member(MEMBER)  # не знаем — не пускаем, но и не удаляем
+
+
+async def test_v2_cancelled_request_does_not_break_the_shared_check(grouped):
+    """Один из параллельных запросов оборвался (человек закрыл кабинет) — остальные получают ответ."""
+    w, bot = grouped, grouped.bot
+    bot.delay = 0.05
+    guard = w.api.guard
+    first, second = asyncio.create_task(guard.member_ok(MEMBER)), asyncio.create_task(guard.member_ok(MEMBER))
+    await asyncio.sleep(0.01)
+    first.cancel()
+    assert await second is True and bot.asked == [(GROUP, MEMBER)]
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert await guard.member_ok(MEMBER) is True and bot.asked == [(GROUP, MEMBER)]  # ответ попал в кэш
+
+
 # ---------- V13–V16: проверка значений ----------
 
 async def test_v13_brand_color_must_be_hex(w):
@@ -421,6 +476,32 @@ async def test_v13_brand_color_must_be_hex(w):
     assert await w.db.get_setting("brand") is None
     r = await w.client.post("/api/settings", json={"brand": {"name": "Пиксель", "primary": "#0a0B0c", "accent": ""}}, headers=auth())
     assert r.status == 200 and (await r.json())["brand"]["primary"] == "#0a0B0c"
+
+
+async def test_v13_cabinet_bot_and_landing_share_one_color_rule(w, monkeypatch):
+    """Правило цвета одно — `valid_color` из content/render.py: его знают бот, рендер, кабинет и лендинг."""
+    from leadhunter.content import render
+    from leadhunter.content.render import valid_color
+    from leadhunter.miniapp import landing, validation
+
+    for color in ("#14141F", " #7c5cff ", "#abc", "red", "#12345", "#1234567", "#zzzzzz", "14141F", "#14141F;", ""):
+        r = await w.client.post("/api/settings", json={"brand": {"primary": color}}, headers=auth())
+        assert (r.status == 200) == (valid_color(color) or not color.strip()), color
+    # своих копий правила в кабинете нет
+    assert not hasattr(validation, "COLOR_RE") and not hasattr(landing, "_COLOR") and not hasattr(landing, "_DEFAULTS")
+    # поменяли правило в одном месте — поменялось везде
+    monkeypatch.setattr(render, "HEX_COLOR", re.compile(r"^#[0-9a-f]{3}$"))
+    assert (await w.client.post("/api/settings", json={"brand": {"primary": "#abc"}}, headers=auth())).status == 200
+    await error_of(await w.client.post("/api/settings", json={"brand": {"primary": "#14141F"}}, headers=auth()))
+    page = await (await w.client.get(f"/lp/{await w.magnet()}")).text()
+    assert "--bg:#abc;" in page
+
+
+def test_v13_cabinet_js_has_no_own_color_rule():
+    import os
+    from leadhunter.miniapp.server import STATIC
+    js = open(os.path.join(STATIC, "app.js"), encoding="utf-8").read()
+    assert "[0-9a-f]{6}" not in js
 
 
 async def test_v14_hot_lead_stays_open_and_can_be_taken(w):
@@ -622,6 +703,208 @@ async def test_m13_deleted_content_is_hidden_and_cannot_be_published(w):
     for body in ({"action": "publish"}, {"action": "schedule", "at": "2030-01-01T10:00"}):
         assert "удалён" in await error_of(await w.client.post(f"/api/content/{gone}", json=body, headers=auth()))
     assert (await w.factory.store.get(gone))["status"] == "rejected"
+
+
+class Pub:
+    """Площадка-заглушка: публикует или падает с заданной причиной."""
+
+    def __init__(self, platform, label, fail=None):
+        self.platform, self.label, self.fail, self.calls = platform, label, fail, 0
+
+    async def publish(self, text, images, video):
+        from leadhunter.content.publish import PublishResult
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError(self.fail)
+        return PublishResult(self.platform, f"https://example.org/{self.platform}/{self.calls}")
+
+
+def use_pubs(w, *pubs):
+    async def publishers():
+        return list(pubs)
+    w.deps.extra["publishers"] = publishers
+
+
+async def published_item(w) -> int:
+    item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
+    use_pubs(w, Pub("telegram", "Telegram"))
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    assert (await r.json())["item"]["status"] == "published"
+    return item_id
+
+
+async def test_published_content_cannot_be_rejected(w):
+    item_id = await published_item(w)
+    err = await error_of(await w.client.post(f"/api/content/{item_id}", json={"action": "reject"}, headers=auth()), 409)
+    assert "черновик" in err
+    assert (await w.factory.store.get(item_id))["status"] == "published"
+    items = (await (await w.client.get("/api/content", headers=auth())).json())["items"]
+    assert [i["id"] for i in items] == [item_id]
+    # то, что прямо сейчас публикуется, тоже не удалить
+    busy = await w.factory.save("post", "тема", {"title": "Пост 2", "body": "Текст"})
+    assert await w.factory.store.claim(busy)
+    await error_of(await w.client.post(f"/api/content/{busy}", json={"action": "reject"}, headers=auth()), 409)
+    assert (await w.factory.store.get(busy))["status"] == "publishing"
+    # черновик и запланированное удаляются как раньше
+    for at in (None, "2030-01-01T10:00"):
+        draft = await w.factory.save("post", "тема", {"title": "Черновик", "body": "Текст"})
+        if at:
+            await w.client.post(f"/api/content/{draft}", json={"action": "schedule", "at": at}, headers=auth())
+        r = await w.client.post(f"/api/content/{draft}", json={"action": "reject"}, headers=auth())
+        assert r.status == 200 and (await r.json())["item"]["status"] == "rejected"
+
+
+async def test_published_magnet_keeps_its_landing_page(w):
+    slug = await w.magnet()
+    item_id = (await w.factory.store.by_slug(slug))["id"]
+    use_pubs(w, Pub("telegram", "Telegram"))
+    await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    await error_of(await w.client.post(f"/api/content/{item_id}", json={"action": "reject"}, headers=auth()), 409)
+    assert (await w.client.get(f"/lp/{slug}")).status == 200  # ссылка из вышедшего поста не ломается
+
+
+async def test_published_content_cannot_be_edited(w):
+    item_id = await published_item(w)
+    for body in ({"action": "edit", "body": "Подменённый текст"}, {"action": "edit", "caption": "x"}, {"action": "edit", "hashtags": ["#x"]}):
+        err = await error_of(await w.client.post(f"/api/content/{item_id}", json=body, headers=auth()), 409)
+        assert "черновик" in err
+    row = await w.factory.store.get(item_id)
+    assert row["body"] == "Текст поста" and not row["caption"] and not row["hashtags"]
+    assert await w.factory.store.edits("post") == []  # несостоявшаяся правка не учит ИИ
+    # публикуется сейчас и удалённое — тоже не править
+    busy = await w.factory.save("post", "тема", {"title": "Пост 2", "body": "Текст"})
+    assert await w.factory.store.claim(busy)
+    gone = await w.factory.save("post", "тема", {"title": "Пост 3", "body": "Текст"})
+    await w.factory.store.reject(gone)
+    for other in (busy, gone):
+        await error_of(await w.client.post(f"/api/content/{other}", json={"action": "edit", "body": "x"}, headers=auth()), 409)
+    # черновик правится как раньше
+    draft = await w.factory.save("post", "тема", {"title": "Черновик", "body": "Было"})
+    r = await w.client.post(f"/api/content/{draft}", json={"action": "edit", "body": "Стало"}, headers=auth())
+    assert r.status == 200 and (await r.json())["item"]["body"] == "Стало"
+    assert await w.factory.store.edits("post") == [("Было", "Стало")]
+
+
+async def test_published_content_cannot_be_rescheduled_and_past_time_is_refused(w):
+    item_id = await published_item(w)
+    for body in ({"action": "schedule", "at": "2030-01-01T10:00"}, {"action": "draft"}):
+        await error_of(await w.client.post(f"/api/content/{item_id}", json=body, headers=auth()), 409)
+    assert (await w.factory.store.get(item_id))["status"] == "published"
+    draft = await w.factory.save("post", "тема", {"title": "Черновик", "body": "Текст"})
+    err = await error_of(await w.client.post(f"/api/content/{draft}", json={"action": "schedule", "at": "2020-01-01T10:00"}, headers=auth()))
+    assert "прошл" in err and (await w.factory.store.get(draft))["status"] == "draft"
+
+
+async def test_failed_platforms_are_shown_and_resent_only_there(w):
+    item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
+    tg, vk = Pub("telegram", "Telegram"), Pub("vk", "VK", fail="токен протух: access_token=TOK456")
+    use_pubs(w, tg, vk)
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    body = await r.json()
+    item = body["item"]
+    assert r.status == 200 and item["status"] == "published" and [p["platform"] for p in item["published"]] == ["telegram"]
+    assert item["publish_errors"] == [{"platform": "vk", "label": "VK", "error": "токен протух: access_token=***"}]
+    assert "TOK456" not in json.dumps(body, ensure_ascii=False)
+    # то же видно в списке и в карточке
+    listed = (await (await w.client.get("/api/content?status=published", headers=auth())).json())["items"][0]
+    assert listed["publish_errors"] == item["publish_errors"]
+    # «Доотправить»: уходит только туда, куда не ушло
+    vk.fail = None
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    body = await r.json()
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, vk.calls) == (1, 2)
+    assert body["item"]["publish_errors"] == [] and [p["platform"] for p in body["item"]["published"]] == ["telegram", "vk"]
+    # всё вышло — третий раз никуда не уходит
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    body = await r.json()
+    assert body["results"] == [] and "уже опубликован" in body["errors"][0] and (tg.calls, vk.calls) == (1, 2)
+
+
+async def partly_published(w):
+    """Материал вышел в Telegram, а в VK — нет."""
+    item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
+    tg, vk = Pub("telegram", "Telegram"), Pub("vk", "VK", fail="нет прав на стену")
+    use_pubs(w, tg, vk)
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    assert [e["platform"] for e in (await r.json())["item"]["publish_errors"]] == ["vk"]
+    vk.fail = None
+    return item_id, tg, vk
+
+
+async def resend(w, item_id):
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    assert r.status == 200
+    return await r.json()
+
+
+async def test_resend_keeps_platform_that_is_switched_off(w):
+    """VK выключили на время: «Доотправить» туда не шлёт, но и не забывает, что материал туда не ушёл."""
+    item_id, tg, vk = await partly_published(w)
+    await w.db.set_setting("publish_vk", "0")
+    body = await resend(w, item_id)
+    assert body["results"] == [] and "выключена" in body["errors"][0] and vk.calls == 1
+    assert body["item"]["publish_errors"] == [{"platform": "vk", "label": "VK", "error": "нет прав на стену"}]
+    await w.db.set_setting("publish_vk", "1")
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, vk.calls) == (1, 2)
+    assert body["item"]["publish_errors"] == []
+
+
+async def test_resend_keeps_platform_that_is_disconnected(w):
+    item_id, tg, vk = await partly_published(w)
+    use_pubs(w, tg)  # VK отключили в /channels
+    body = await resend(w, item_id)
+    assert body["results"] == [] and "VK" in body["errors"][0] and "не подключена" in body["errors"][0]
+    assert [e["platform"] for e in body["item"]["publish_errors"]] == ["vk"]
+    use_pubs(w, tg, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and body["item"]["publish_errors"] == []
+
+
+async def test_resend_keeps_failed_platforms_when_material_is_not_ready(w, monkeypatch):
+    item_id, tg, vk = await partly_published(w)
+    monkeypatch.setattr(type(w.factory), "not_ready", lambda self, row: "нет файла картинки")
+    body = await resend(w, item_id)
+    assert body["results"] == [] and body["errors"] == ["нет файла картинки"] and vk.calls == 1
+    assert [e["platform"] for e in body["item"]["publish_errors"]] == ["vk"]
+
+
+async def test_resend_does_not_post_to_newly_connected_platform(w):
+    """«Доотправить» шлёт только туда, куда не ушло, — не на площадку, подключённую позже."""
+    item_id, tg, vk = await partly_published(w)
+    ok_ru = Pub("ok", "Одноклассники")
+    use_pubs(w, tg, ok_ru, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, ok_ru.calls, vk.calls) == (1, 0, 2)
+    assert [p["platform"] for p in body["item"]["published"]] == ["telegram", "vk"] and body["item"]["publish_errors"] == []
+
+
+async def test_resend_after_interruption_goes_to_every_platform_left(w):
+    """Публикацию оборвали на середине (какие площадки остались — не записано): доотправка идёт на все оставшиеся."""
+    from leadhunter.content.store import INTERRUPTED
+    item_id = await published_item(w)
+    await w.factory.store.update(item_id, publish_errors=[INTERRUPTED])
+    tg, vk = Pub("telegram", "Telegram"), Pub("vk", "VK")
+    use_pubs(w, tg, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, vk.calls) == (0, 1)
+    assert body["item"]["publish_errors"] == []
+
+
+async def test_nothing_published_keeps_draft_and_shows_reasons(w):
+    item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
+    use_pubs(w, Pub("vk", "VK", fail="нет прав на стену"))
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    item = (await r.json())["item"]
+    assert item["status"] == "draft" and item["published"] == []
+    assert item["publish_errors"] == [{"platform": "vk", "label": "VK", "error": "нет прав на стену"}]
+
+
+def test_cabinet_js_shows_failed_platforms_and_resend_button():
+    import os
+    from leadhunter.miniapp.server import STATIC
+    js = open(os.path.join(STATIC, "app.js"), encoding="utf-8").read()
+    assert "publish_errors" in js and "Доотправить" in js and "publishing" in js
 
 
 async def test_m15_no_ai_hint_and_manual_format(w):

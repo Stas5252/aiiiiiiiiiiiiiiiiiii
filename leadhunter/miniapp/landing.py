@@ -1,15 +1,13 @@
 """Публичная страница лид-магнита: содержание + форма «получить». Заявка уходит в пайплайн как горячий лид."""
 import html
-import re
 
-_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
-_DEFAULTS = {"primary": "#14141F", "accent": "#7C5CFF", "text": "#FFFFFF"}
+from ..content.render import Brand, valid_color
 
 
 def _color(brand, key: str) -> str:
-    """Цвет попадает в CSS страницы: всё, что не #RRGGBB, заменяем запасным."""
-    value = str(getattr(brand, key, "") or "")
-    return value if _COLOR.fullmatch(value) else _DEFAULTS[key]
+    """Цвет попадает в CSS страницы: всё, что не проходит общее правило цвета, заменяем цветом по умолчанию."""
+    value = getattr(brand, key, "")
+    return value.strip() if valid_color(value) else Brand.__dataclass_fields__[key].default
 
 
 def _page(title: str, brand, body: str) -> str:

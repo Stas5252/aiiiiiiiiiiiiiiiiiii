@@ -279,7 +279,7 @@ async function loadStats() {
 /* ---------- Контент-фабрика ---------- */
 const C = { status: "" };
 const KIND = { post: "Пост", carousel: "Карусель", reel: "Видео", magnet: "Лид-магнит" };
-const CSTATUS = { draft: "черновик", scheduled: "в плане", published: "вышло", rejected: "удалено" };
+const CSTATUS = { draft: "черновик", scheduled: "в плане", publishing: "публикуется", published: "вышло", rejected: "удалено" };
 $$("#c-seg button").forEach((b) => b.onclick = () => { $$("#c-seg button").forEach((x) => x.classList.toggle("on", x === b)); C.status = b.dataset.cstatus; haptic.sel(); loadContent(); });
 $("#c-make").onclick = async () => {
   const topic = $("#c-topic").value.trim(); if (!topic) return toast("Напишите тему");
@@ -287,12 +287,17 @@ $("#c-make").onclick = async () => {
   try { await api("/api/content", { method: "POST", body: JSON.stringify({ kind: $("#c-kind").value, topic }) }); $("#c-topic").value = ""; haptic.ok(); loadContent(); }
   catch (e) { haptic.err(); toast(e.message); } finally { $("#c-make").disabled = false; }
 };
-async function cact(id, body) { try { const r = await api("/api/content/" + id, { method: "POST", body: JSON.stringify(body) }); haptic.ok(); if (r.errors?.length) toast(r.errors.join("; ")); else if (r.results) toast("Опубликовано"); loadContent(); } catch (e) { haptic.err(); toast(e.message); } }
+async function cact(id, body) { try { const r = await api("/api/content/" + id, { method: "POST", body: JSON.stringify(body) }); haptic.ok(); if (r.errors?.length) toast((r.results?.length ? "Вышло не везде. " : "") + r.errors.join("; ")); else if (r.results) toast("Опубликовано"); loadContent(); } catch (e) { haptic.err(); toast(e.message); loadContent(); } }
 function contentRow(it) {
   const when = it.scheduled_at && it.status === "scheduled" ? " · " + new Date(it.scheduled_at).toLocaleString("ru", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
   const links = (it.published || []).map((p) => safeHref(p.url) ? `<a href="${esc(safeHref(p.url))}" target="_blank" rel="noopener">${esc(p.platform)}</a>` : esc(p.platform)).join(" ");
   const cover = it.images?.[0] ? `<img src="${esc(it.images[0])}" alt="">` : it.video ? `<span class="score">▶</span>` : `<span class="score">${KIND[it.kind]?.[0] || "?"}</span>`;
-  const act = it.status === "published" || it.status === "rejected" ? "" : `<div class="c-actions">
+  /* площадки, куда публикация не ушла: причина и «Доотправить» (уйдёт только туда) */
+  const failed = it.publish_errors || [];
+  const fail = failed.length ? `<div class="c-fail"><b>Не ушло</b>${failed.map((f) => `<div><span class="c-fail-where">${esc(f.label || f.platform || "площадка")}</span> — ${esc(f.error || "ошибка")}</div>`).join("")}</div>` : "";
+  const status = it.status === "published" && failed.length ? "вышло не везде" : CSTATUS[it.status] || it.status;
+  const act = it.status === "published" ? (failed.length ? `<div class="c-actions"><button data-a="publish">Доотправить</button></div>` : "")
+    : it.status === "rejected" || it.status === "publishing" ? "" : `<div class="c-actions">
       <button data-a="publish">${it.status === "scheduled" ? "Сейчас" : "Опубликовать"}</button>
       ${it.status === "scheduled" ? `<button data-a="draft">Снять</button>` : `<button data-a="pick">Когда</button>`}
       <button data-a="reject" class="danger">Удалить</button>
@@ -300,8 +305,8 @@ function contentRow(it) {
   return `<div class="lead c-item" data-id="${it.id}"><div class="inner">${cover}<div class="body">
     <div class="title">${esc(it.title || it.topic)}</div>
     <div class="sub">${esc((it.text || "").slice(0, 160))}</div>
-    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${CSTATUS[it.status] || it.status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${encodeURIComponent(it.slug)}" target="_blank" rel="noopener">страница</a></span>` : ""}</div>
-    ${act}</div></div></div>`;
+    <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${encodeURIComponent(it.slug)}" target="_blank" rel="noopener">страница</a></span>` : ""}</div>
+    ${fail}${act}</div></div></div>`;
 }
 /* заявки со страниц лид-магнитов: видны все, даже если заявка не стала лидом */
 function renderLandingLeads(items) {
@@ -396,7 +401,8 @@ function renderFresh(f) {
 }
 function renderBrand(b) {
   setVal("#s-brand-name", b.name); setVal("#s-brand-handle", b.handle);
-  for (const k of ["primary", "accent"]) { const c = /^#[0-9a-f]{6}$/i.test(b[k] || "") ? b[k] : "#000000"; $("#s-brand-" + k).value = c; $("#s-brand-" + k + "-hex").textContent = c; }
+  // сервер отдаёт уже проверенные цвета (правило одно, на сервере)
+  for (const k of ["primary", "accent"]) { $("#s-brand-" + k).value = b[k]; $("#s-brand-" + k + "-hex").textContent = b[k]; }
 }
 function renderExtra(s) {
   const sel = $("#s-niche");

@@ -1,11 +1,9 @@
 """Единый разбор входных данных кабинета: неверный ввод — это 400 с понятным текстом, а не 500."""
 import json
-import re
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
-COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
 SQLITE_MAX_INT = 2**63 - 1
 SAFE_SCHEMES = ("http", "https", "tg")
 
@@ -94,8 +92,9 @@ def to_str_list(value, name: str, max_items: int = 200, max_len: int = 200) -> l
 
 def to_color(value, name: str) -> str:
     """Пустая строка — «не задано», иначе строго #RRGGBB: другое ломает рендер картинок и видео."""
+    from ..content.render import valid_color  # правило одно на бота, рендер и кабинет
     v = to_str(value, name, 20)
-    if v and not COLOR_RE.fullmatch(v):
+    if v and not valid_color(v):
         raise bad(f"{name}: цвет в формате #RRGGBB, например #14141F")
     return v
 

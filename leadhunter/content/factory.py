@@ -11,7 +11,7 @@ from .generator import NO_AI, ContentError, ContentGenerator, magnet_text
 from .images import MediaAI
 from .manual import MANUAL_HINT, manual_data
 from .media import MediaStore
-from .store import INTERRUPTED, STATUSES, ContentStore, body_json, media_json
+from .store import INTERRUPTED, STATUSES, ContentStore, body_json, errors_json, media_json
 
 log = logging.getLogger(__name__)
 
@@ -306,12 +306,18 @@ class ContentFactory:
             return Outcome([], [f"#{item_id}: {reason}"])
         before = row["status"] if row["status"] in ("draft", "scheduled", "published") else "draft"
         results, errors, failed, done = [], [], [], []
-        finished = False
+        owed, sent = [], set()  # owed — куда не ушло в прошлый раз (только при доотправке)
+        finished = looped = False
         try:
             row = await self.store.get(item_id)
             done = [p for p in json.loads(row["published"] or "[]") if isinstance(p, dict)]
             if before != "published" and done:
                 before = "published"
+            if done:
+                owed = errors_json(row)
+            # доотправка идёт только туда, куда не ушло, — не на площадки, подключённые позже. Если прошлую
+            # публикацию оборвали (INTERRUPTED, площадка не названа), оставшиеся неизвестны: шлём на все, где материала нет
+            only = {f["platform"] for f in owed} if owed and all(f.get("platform") for f in owed) else None
             problem = self.not_ready(row)
             if problem:
                 errors.append(problem)
@@ -321,8 +327,11 @@ class ContentFactory:
             images, video = self.files(row)
             wanted = platforms or [p.strip() for p in (row["platforms"] or "").split(",") if p.strip()] or None
             sent = {p.get("platform") for p in done}
+            for f in owed:
+                if f.get("platform") and f["platform"] not in sent and all(p.platform != f["platform"] for p in publishers):
+                    errors.append(f"{f.get('label') or f['platform']}: площадка не подключена")
             for pub in publishers:
-                if (wanted and pub.platform not in wanted) or pub.platform in sent:
+                if (wanted and pub.platform not in wanted) or pub.platform in sent or (only is not None and pub.platform not in only):
                     continue
                 if await self.db.get_setting("publish_" + pub.platform, "1") == "0":
                     errors.append(f"{pub.label}: публикация выключена в настройках")
@@ -340,13 +349,17 @@ class ContentFactory:
                 sent.add(res.platform)
                 done.append({"platform": res.platform, "url": res.url})
                 await self.store.add_published(item_id, done[-1])  # сразу: перезапуск не отправит сюда второй раз
-            finished = True
+            finished = looped = True
             if not results and not errors:
                 errors.append("отправлять некуда: все подключённые площадки этот материал уже получили")
             return Outcome(results, errors)
         finally:
             if not finished and done and not failed:
                 failed.append(INTERRUPTED)  # оборвали на середине: остальное можно доотправить
+            # куда не ушло в прошлый раз и в этот раз не пробовали (площадка выключена, отключена, материал не готов) —
+            # остаётся в списке, иначе доотправить туда будет уже нельзя
+            tried = sent | {f["platform"] for f in failed}
+            failed += [f for f in owed if f not in failed and (f["platform"] not in tried if f.get("platform") else not looped)]
             # что-то вышло (сейчас или раньше) — материал опубликован; не ушедшие площадки остаются в publish_errors
             # и доотправляются повторным «Опубликовать». Ничего не вышло — возвращаем прежний статус.
             await asyncio.shield(self.store.finish_publish(item_id, "published" if done else before, failed))

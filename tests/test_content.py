@@ -411,9 +411,16 @@ async def test_miniapp_content_api_and_landing(client, env):
     sent = [d for n, d in env.session.calls if n == "SendMessage"]
     assert sent and sent[0]["chat_id"] == OWNER and "landing" in sent[0]["text"]
     assert (await env.factory.store.stats())["landing_leads"] == 1
+    # опубликованный лид-магнит удалить нельзя (как и в боте): ссылка из вышедшего поста продолжает работать
     r = await client.post(f"/api/content/{item['id']}", json={"action": "reject"}, headers=headers())
+    assert r.status == 409 and (await env.factory.store.get(item["id"]))["status"] == "published"
+    assert (await client.get(f"/lp/{item['slug']}")).status == 200
+    # страница черновика исчезает вместе с ним
+    r = await client.post("/api/content", json={"kind": "magnet", "topic": "второй чек-лист"}, headers=headers())
+    draft = (await r.json())["item"]
+    r = await client.post(f"/api/content/{draft['id']}", json={"action": "reject"}, headers=headers())
     assert (await r.json())["item"]["status"] == "rejected"
-    assert (await client.get(f"/lp/{item['slug']}")).status == 404
+    assert (await client.get(f"/lp/{draft['slug']}")).status == 404
 
 
 def test_format_card_truncates():

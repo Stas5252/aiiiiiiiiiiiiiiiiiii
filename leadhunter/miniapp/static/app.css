@@ -286,3 +286,7 @@ input:not([type="checkbox"]):disabled, .switch input:disabled + span { opacity: 
 /* отчёт по команде: имя не сжимается до «Ма…», цифры при нехватке места переносятся */
 #team .row > span:first-child { flex: 0 0 auto; max-width: 50%; }
 #team .row .n { white-space: normal; text-align: right; min-width: 0; }
+/* площадки, куда публикация не ушла */
+.c-fail { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--fg); border-radius: 10px; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.c-fail b { display: block; margin-bottom: 2px; }
+.c-fail-where { font-weight: 600; }

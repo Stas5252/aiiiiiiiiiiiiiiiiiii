@@ -212,11 +212,13 @@ async def test_v11_27_schedule_only_drafts_and_only_future(env):
     assert await store.schedule(3, datetime.now(timezone.utc) + timedelta(hours=1))
     # кабинет ходит в то же хранилище: опубликованное и прошлое время в расписание не попадают
     async with await cabinet(env) as c:
+        # и кабинет говорит об этом прямо, а не отвечает «200» без изменений
         r = await c.post("/api/content/1", json={"action": "schedule", "at": "2030-01-15T10:00:00"}, headers=headers())
-        assert (await r.json())["item"]["status"] == "published"
+        assert r.status == 409 and "черновик" in (await r.json())["error"] and (await store.get(1))["status"] == "published"
         r = await c.post("/api/content/3", json={"action": "draft"}, headers=headers())
+        assert r.status == 200 and (await r.json())["item"]["status"] == "draft"
         r = await c.post("/api/content/3", json={"action": "schedule", "at": "2020-01-01T10:00:00"}, headers=headers())
-        assert (await r.json())["item"]["status"] == "draft"
+        assert r.status == 400 and "прошло" in (await r.json())["error"] and (await store.get(3))["status"] == "draft"
     pub = Pub()
     notes, notify = await notes_sink()
     assert await publish_due(env.factory, [pub], notify) == 0 and not pub.calls

@@ -404,7 +404,7 @@ class MiniAppAPI:
 
     def _content_row(self, r) -> dict:
         from ..content.factory import compose_text
-        from ..content.store import media_json
+        from ..content.store import errors_json, media_json
 
         d = dict(r)
         media = media_json(r)
@@ -414,7 +414,16 @@ class MiniAppAPI:
         # compose_text отдаёт HTML для Telegram; кабинету нужен обычный текст — экранирует он сам, один раз
         d["text"] = html.unescape(re.sub(r"<[^>]+>", "", compose_text(r)))
         d["published"] = json.loads(r["published"] or "[]")
+        # площадки, куда не ушло: причина — без ключей и токенов, если они попали в текст ошибки
+        d["publish_errors"] = [{"platform": str(x.get("platform") or ""), "label": str(x.get("label") or x.get("platform") or ""),
+                                "error": self._safe_error(str(x.get("error") or ""))} for x in errors_json(r)]
         return d
+
+    def _safe_error(self, text: str) -> str:
+        from ..integrations import scrub
+        settings = self.deps.extra.get("settings")
+        text = scrub(text, settings) if settings else text
+        return _SECRET_IN_TEXT.sub(r"\1=***", text)[:300]
 
     async def content_list(self, request):
         await self.user(request)
@@ -471,7 +480,9 @@ class MiniAppAPI:
             out = await self.factory.publish(row, pubs)
             return web.json_response({"item": self._content_row(await self.factory.store.get(item_id)),
                                       "results": [{"platform": r.platform, "url": r.url} for r in out.results],
-                                      "errors": out.errors})
+                                      "errors": [self._safe_error(e) for e in out.errors]})
+        # Всё остальное меняет материал — это можно только с черновиком или запланированным (как в боте)
+        editable = row["status"] in ("draft", "scheduled")
         if action == "schedule":
             try:
                 at = datetime.fromisoformat(body["at"])
@@ -480,12 +491,19 @@ class MiniAppAPI:
             if at.tzinfo is None:
                 from zoneinfo import ZoneInfo
                 at = at.replace(tzinfo=ZoneInfo(self.deps.tz))
-            await self.factory.store.schedule(item_id, at)
+            if not editable:
+                raise web.HTTPConflict(text="В расписание можно поставить только черновик — этот уже опубликован или публикуется")
+            if not await self.factory.store.schedule(item_id, at):
+                raise bad("Это время уже прошло — выберите время в будущем")
         elif action == "draft":
-            await self.factory.store.schedule(item_id, None)
+            if not editable or not await self.factory.store.schedule(item_id, None):
+                raise web.HTTPConflict(text="Снять с плана можно только запланированное — этот материал уже опубликован или публикуется")
         elif action == "reject":
-            await self.factory.store.update(item_id, status="rejected")
+            if not await self.factory.store.reject(item_id):
+                raise web.HTTPConflict(text="Удалить можно только черновик — этот уже опубликован или публикуется")
         elif action == "edit":
+            if not editable:
+                raise web.HTTPConflict(text="Править можно только черновик — этот уже опубликован, публикуется или удалён")
             fields = {}
             for k in ("body", "caption"):
                 if isinstance(body.get(k), str):
