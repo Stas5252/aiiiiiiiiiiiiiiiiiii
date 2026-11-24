@@ -120,11 +120,25 @@ def robots_rules(robots: str, agent: str = AGENT) -> list[tuple[bool, str]]:
 
 
 def _rule_matches(pattern: str, path: str) -> bool:
-    """Шаблон robots.txt: «*» — любые символы, «$» в конце — конец адреса; без «$» — начало пути."""
+    """Шаблон robots.txt: «*» — любые символы, «$» в конце — конец адреса; без «$» — начало пути.
+    Без регулярных выражений: шаблон пишет владелец чужого сайта, и «/*a*a*a*a$» не должен подвешивать бота —
+    куски между «*» ищутся по очереди слева направо, это один проход по адресу."""
     anchored = pattern.endswith("$")
-    body = pattern[:-1] if anchored else pattern
-    regex = "".join(".*" if ch == "*" else re.escape(ch) for ch in body) + ("$" if anchored else "")
-    return re.match(regex, path) is not None
+    first, *rest = (pattern[:-1] if anchored else pattern).split("*")
+    if not path.startswith(first):
+        return False
+    if not rest:
+        return not anchored or len(path) == len(first)
+    pos = len(first)
+    last = rest.pop()
+    for part in rest:
+        found = path.find(part, pos)
+        if found < 0:
+            return False
+        pos = found + len(part)
+    if anchored:
+        return len(path) - len(last) >= pos and path.endswith(last)
+    return path.find(last, pos) >= 0
 
 
 def robots_allows(robots: str, url: str) -> bool:

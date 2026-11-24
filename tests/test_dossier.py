@@ -190,6 +190,25 @@ def test_robots_rules_are_read_like_search_engines_do(robots, url, allowed):
     assert robots_allows(robots, url) is allowed
 
 
+@pytest.mark.parametrize("pattern, path, matches", [
+    ("/a*b*c", "/a1b2c3", True), ("/a*b*c$", "/a1b2c3", False), ("/a*b*c$", "/a1b2c", True), ("/*.pdf$", "/x/y.pdf", True),
+    ("/*.pdf$", "/x/y.pdf?1", False), ("/a*a$", "/a", False), ("/a*a$", "/aa", True), ("/a$", "/a", True), ("/a$", "/ab", False),
+    ("/a**b", "/ab", True), ("*", "/anything", True), ("/x*", "/y", False),
+])
+def test_robots_wildcards(pattern, path, matches):
+    from leadhunter.analysis.site import _rule_matches
+
+    assert _rule_matches(pattern, path) is matches
+
+
+def test_hostile_robots_pattern_does_not_hang_the_bot():
+    """Ссылку и robots.txt задаёт автор заказа: шаблон из сотни «*a» на длинном адресе раньше считался бы часами."""
+    robots = "User-agent: *\nDisallow: /" + "*a" * 100 + "$\n"
+    started = time.monotonic()
+    assert robots_allows(robots, "https://x.ru/" + "a" * 5000 + "b") is True
+    assert time.monotonic() - started < 1
+
+
 async def test_sitemap_from_robots_saves_a_request():
     web = FakeWeb({"https://kabluk.ru/robots.txt": ROBOTS_OK, "https://kabluk.ru": GOOD})
     r = await analyze_site("https://kabluk.ru", get=web, now=NOW)
