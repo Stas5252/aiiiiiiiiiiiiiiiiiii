@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from .. import features
 from .factory import API_PLATFORMS, ContentFactory, error_text
 from .store import errors_json
 
@@ -14,7 +15,7 @@ log = logging.getLogger(__name__)
 async def publish_due(factory: ContentFactory, publishers: list, notify, *, limit: int = 1) -> int:
     """Один проход: не больше limit материалов, чьё время пришло (самые давние — первыми). После простоя
     пропущенные слоты выходят по одному за проход, а не пачкой. notify(text) — сообщить владельцу о результате."""
-    if await factory.db.get_setting("schedule_enabled", "1") == "0":
+    if not await features.enabled(factory.db, "schedule_enabled"):
         return 0
     await factory.store.release_stuck()
     n = 0
@@ -96,7 +97,7 @@ async def autopilot_once(factory: ContentFactory, deliver, tz_name: str, hour: i
         else:
             ideas = (await factory.gen.generate("ideas", "", n=1))["ideas"]
             kind, topic = ideas[0].get("kind", "post"), ideas[0]["topic"]
-        if await db.get_setting("format_" + kind, "1") == "0":
+        if not await features.enabled(db, "format_" + kind):
             kind = "post"  # формат идеи выключен в настройках — делаем пост
         row = await factory.create(kind, topic, created_by="автопилот", parent_id=parent)
     except Exception as e:

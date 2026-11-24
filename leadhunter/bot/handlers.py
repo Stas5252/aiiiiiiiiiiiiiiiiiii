@@ -50,7 +50,7 @@ HELP = """Я ищу лидов и делаю контент под вашу ни
 /discover ниша — найти и оценить чаты по нише (ИИ смотрит последние сообщения)
 
 <b>Контент-фабрика</b> — /content
-/post, /carousel, /reel, /magnet тема · /ideas · /plan · /queue · /channels · /voice · /brand · /autopilot on
+/post, /carousel, /reel тема · /ideas · /plan · /queue · /channels · /voice · /brand · /autopilot on
 
 /sources — состояние источников"""
 
@@ -88,7 +88,7 @@ async def onboarding_text(deps: "BotDeps", first: bool) -> str:
         f"{'✅' if sm.get('miniapp') else '3️⃣'} Кабинет — /app" + ("" if sm.get("miniapp") else " (Mini App с лидами, отчётами и контентом)"),
         f"{'✅' if ws else '▫️'} Группа для команды — /setup_group (необязательно)",
     ]
-    return (f"{hello} Лиды приходят сюда с кнопками «Беру / Горячий / Не лид», контент — по командам /post, /toon, /ideas.\n\n"
+    return (f"{hello} Лиды приходят сюда с кнопками «Беру / Горячий / Не лид», контент для Threads и Instagram — по командам /post, /carousel, /ideas.\n\n"
             + "\n".join(steps) + "\n\n/status — что работает · /help — все команды · /fresh — какие заказы с бирж присылать")
 
 
