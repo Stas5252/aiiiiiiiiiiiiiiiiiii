@@ -45,10 +45,13 @@ async def fetch(url: str, *, timeout: int = 15, max_bytes: int = MAX_BYTES) -> P
     url = normalize_url(url)
     started = time.monotonic()
     for _ in range(REDIRECTS + 1):
-        parts = urlsplit(url)
+        try:
+            parts = urlsplit(url)
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:  # порт не число или вне диапазона, незакрытая скобка IPv6 — в том числе в переадресации
+            return Page(url, error="это не ссылка на сайт")
         if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
             return Page(url, error="это не ссылка на сайт")
-        port = parts.port or (443 if parts.scheme == "https" else 80)
         host = puny(parts.hostname)
         if host != parts.hostname:
             url = parts._replace(netloc=host + (f":{parts.port}" if parts.port else "")).geturl()

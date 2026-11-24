@@ -176,6 +176,14 @@ def test_api_source_treats_social_page_as_no_site():
     assert lead.external_id == "2" and "страница на vk.com" in lead.text
 
 
+async def test_site_with_broken_address_is_a_problem_not_an_exception():
+    """Было: адрес с неверным портом (в карточке или в переадресации) ронял проверку, и лид о сломанном сайте терялся."""
+    from leadhunter.audit import audit_site
+
+    assert await audit_site("http://studio.example:99999/") == "сайт не открывается (это не ссылка на сайт)"
+    assert await audit_site("http://[studio") == "сайт не открывается (это не ссылка на сайт)"
+
+
 def test_api_source_recognizes_unknown_directory():
     """Было: с ключом Geosearch компания со страницей в незнакомом справочнике считалась компанией с сайтом и не приходила."""
     def feature(i, name, url):
