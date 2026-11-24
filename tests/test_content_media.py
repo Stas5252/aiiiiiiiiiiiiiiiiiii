@@ -31,7 +31,7 @@ def test_carousel_seven_slides():
 
 
 def test_cover_and_scene_sizes():
-    assert _open(render_cover("Как получать заявки", "5 шагов", BRAND)).size == (1080, 1080)
+    assert _open(render_cover("Как получать заявки", "5 шагов", BRAND)).size == (1080, 1350)  # 4:5, как слайды
     assert _open(render_scene("Крупный текст по центру", BRAND)).size == (1080, 1920)
     assert _open(render_scene("Текст", BRAND, size=(540, 960), subtitle="подпись")).size == (540, 960)
 

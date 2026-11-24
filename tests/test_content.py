@@ -303,20 +303,25 @@ async def test_scheduler_and_autopilot(env):
     async def notify(t):
         notes.append(t)
 
+    async def overdue(item_id):  # время выхода наступило минуту назад (в прошлое store.schedule ставить не даёт)
+        await env.factory.store.update(item_id, status="scheduled",
+                                       scheduled_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())
+
     await env.text("/post тема")
-    await env.factory.store.schedule(1, datetime.now(timezone.utc) - timedelta(minutes=1))
+    await overdue(1)
     pub = Pub()
     assert await publish_due(env.factory, [pub, Broken()], notify) == 1
     assert pub.calls[0][1] == 1 and "#сайт" in pub.calls[0][0]
     row = await env.factory.store.get(1)
-    assert row["status"] == "published" and "опубликован" in notes[0] and "⚠️" not in notes[0]
+    # вышло в Telegram, VK упал: материал опубликован, а владелец видит, куда не ушло
+    assert row["status"] == "published" and "опубликован" in notes[0] and "токен протух" in notes[0]
     # без площадок — возвращаем в черновики и предупреждаем
     await env.text("/post вторая")
-    await env.factory.store.schedule(2, datetime.now(timezone.utc) - timedelta(minutes=1))
+    await overdue(2)
     await publish_due(env.factory, [], notify)
     assert (await env.factory.store.get(2))["status"] == "draft" and "площадки не настроены" in notes[-1]
     # все площадки упали — тоже в черновики
-    await env.factory.store.schedule(2, datetime.now(timezone.utc) - timedelta(minutes=1))
+    await overdue(2)
     await publish_due(env.factory, [Broken()], notify)
     assert (await env.factory.store.get(2))["status"] == "draft" and "токен протух" in notes[-1]
 
@@ -377,7 +382,8 @@ async def test_miniapp_content_api_and_landing(client, env):
     # правка через API — тоже обучение
     r = await client.post(f"/api/content/{item['id']}", json={"action": "edit", "caption": "новая подпись"}, headers=headers())
     assert (await r.json())["item"]["caption"] == "новая подпись"
-    assert await env.factory.store.edits("magnet") == [("", "новая подпись")]
+    # подпись лид-магнита — это его анонс: правка учит ИИ парой «анонс от ИИ → как переписал владелец»
+    assert await env.factory.store.edits("magnet") == [(MAGNET["post"], "новая подпись")]
     r = await client.post(f"/api/content/{item['id']}", json={"action": "schedule", "at": "2030-01-01T10:00"}, headers=headers())
     assert (await r.json())["item"]["status"] == "scheduled"
     r = await client.post(f"/api/content/{item['id']}", json={"action": "publish"}, headers=headers())
@@ -425,7 +431,7 @@ async def test_toon_and_niche(env_noai):
         assert "видео собрано" in texts[-1] and "Директор" in texts[-1] and "SendVideo" in env.session.names()
         row = (await env.factory.store.recent(1))[0]
         assert row["kind"] == "toon" and os.path.getsize(env.factory.media.path(json.loads(row["media"])["video"])) > 0
-    assert "GEMINI_API_KEY" in (await env.text("/aivideo тема"))[0]
+    assert "ключ Gemini в /setup" in (await env.text("/aivideo тема"))[0]
     texts = await env.text("/niche")
     assert "/niche realtor" in texts[0] and "▶️" in texts[0]
     texts = await env.text("/niche realtor")

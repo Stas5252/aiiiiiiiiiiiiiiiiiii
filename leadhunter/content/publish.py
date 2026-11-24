@@ -53,13 +53,47 @@ def html_to_plain(text: str) -> str:
     return html.unescape(text).strip()
 
 
+_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
+
+
+def safe_cut(text: str, cut: int) -> int:
+    """Сдвигает место разреза назад, если оно попало внутрь HTML-тега или сущности (&amp;, &#39;)."""
+    lt, gt = text.rfind("<", 0, cut), text.rfind(">", 0, cut)
+    if lt > gt and text.find(">", cut) != -1:
+        cut = lt
+    amp = text.rfind("&", max(0, cut - 10), cut)
+    if amp != -1 and ";" not in text[amp:cut] and re.match(r"&#?\w{1,8};", text[amp:amp + 10]):
+        cut = amp
+    return cut
+
+
+def truncate_html(text: str, limit: int, tail: str = "…") -> str:
+    """Обрезает HTML для Telegram: не посреди тега или сущности и с закрытием открытых тегов."""
+    if len(text) <= limit:
+        return text
+    head = text[:safe_cut(text, limit)].rstrip()
+    opened: list[str] = []
+    for m in _TAG.finditer(head):
+        name = m.group(2).lower()
+        if not m.group(1):
+            opened.append(name)
+        elif name in opened:
+            while opened.pop() != name:
+                pass
+    return head + tail + "".join(f"</{t}>" for t in reversed(opened))
+
+
+def image_name(data: bytes, stem: str) -> str:
+    return stem + (".jpg" if data[:3] == b"\xff\xd8\xff" else ".png" if data[:4] == b"\x89PNG" else ".jpg")
+
+
 def split_text(text: str, limit: int) -> list[str]:
-    """Режет по абзацам/пробелам, чтобы не рвать слова."""
+    """Режет по абзацам/пробелам, чтобы не рвать слова, HTML-теги и сущности."""
     parts = []
     while len(text) > limit:
         cut = max(text.rfind("\n", 0, limit), text.rfind(" ", 0, limit))
         if cut < limit // 2:
-            cut = limit
+            cut = safe_cut(text, limit) or limit
         parts.append(text[:cut].rstrip())
         text = text[cut:].lstrip()
     if text:
@@ -108,32 +142,43 @@ class TelegramPublisher:
     async def publish(self, text: str, images: Sequence[bytes] = (), video_path: str | None = None) -> PublishResult:
         if len(images) > 10:
             raise PublishError("Telegram: в одном посте не больше 10 картинок")
+        self._note = ""
         try:
             msg = await self._send(text, images, video_path)
         except TelegramAPIError as e:
             raise PublishError(f"Telegram: {e.message}") from e
-        return PublishResult("telegram", self._url(msg.message_id, getattr(msg.chat, "username", None)), str(msg.message_id))
+        return PublishResult("telegram", self._url(msg.message_id, getattr(msg.chat, "username", None)), str(msg.message_id),
+                             note=self._note)
+
+    async def _rest(self, parts: Sequence[str]) -> None:
+        """Продолжение длинного текста. Первое сообщение уже в канале, поэтому сбой здесь — не провал публикации:
+        иначе повтор отправил бы начало (и обложку) второй раз."""
+        for n, p in enumerate(parts):
+            try:
+                await self.bot.send_message(self.target, p)
+            except TelegramAPIError as e:
+                self._note = (f"Telegram: пост вышел, но продолжение текста не отправилось ({e.message}) — "
+                              f"допишите вручную, не хватает {sum(len(x) for x in parts[n:])} знаков.")
+                return
 
     async def _send(self, text: str, images: Sequence[bytes], video_path: str | None):
         bot, chat = self.bot, self.target
         if not images and not video_path:
             parts = split_text(text, MESSAGE_LIMIT) or [text]
             first = await bot.send_message(chat, parts[0])
-            for p in parts[1:]:
-                await bot.send_message(chat, p)
+            await self._rest(parts[1:])
             return first
         caption, *rest = split_text(text, CAPTION_LIMIT) if len(text) > CAPTION_LIMIT else [text]
         tail = text[len(caption):].lstrip() if rest else ""
         if video_path:
             first = await bot.send_video(chat, FSInputFile(video_path), caption=caption or None)
         elif len(images) == 1:
-            first = await bot.send_photo(chat, BufferedInputFile(images[0], "image.jpg"), caption=caption or None)
+            first = await bot.send_photo(chat, BufferedInputFile(images[0], image_name(images[0], "image")), caption=caption or None)
         else:
-            media = [InputMediaPhoto(media=BufferedInputFile(b, f"image{i}.jpg"), caption=caption if i == 0 and caption else None)
+            media = [InputMediaPhoto(media=BufferedInputFile(b, image_name(b, f"image{i}")), caption=caption if i == 0 and caption else None)
                      for i, b in enumerate(images)]
             first = (await bot.send_media_group(chat, media))[0]
-        for p in split_text(tail, MESSAGE_LIMIT):
-            await bot.send_message(chat, p)
+        await self._rest(split_text(tail, MESSAGE_LIMIT))
         return first
 
 
@@ -166,7 +211,7 @@ class VKPublisher:
                 try:
                     for i, img in enumerate(images):
                         srv = await self._call(c, "photos.getWallUploadServer", **group)
-                        up = await self._upload(c, srv["upload_url"], "photo", f"image{i}.jpg", img)
+                        up = await self._upload(c, srv["upload_url"], "photo", image_name(img, f"image{i}"), img)
                         saved = (await self._call(c, "photos.saveWallPhoto", server=up["server"], photo=up["photo"],
                                                   hash=up["hash"], **group))
                         p = saved[0] if isinstance(saved, list) else saved
@@ -231,7 +276,9 @@ class ThreadsPublisher:
         if len(images) > 20:
             raise PublishError("Threads: в карусели не больше 20 картинок")
         plain = html_to_plain(text)
+        note = ""
         if len(plain) > THREADS_LIMIT:
+            note = f"Threads: текст обрезан до {THREADS_LIMIT} знаков (было {len(plain)}) — длиннее площадка не принимает."
             plain = plain[:THREADS_LIMIT - 1].rstrip() + "…"
         base = f"{self.user_id}/threads"
         try:
@@ -260,7 +307,7 @@ class ThreadsPublisher:
                     pass
         except httpx.HTTPError as e:
             raise PublishError(f"Threads: {e!r}") from e
-        return PublishResult("threads", url, post_id)
+        return PublishResult("threads", url, post_id, note=note)
 
 
 class InstagramPublisher:
@@ -298,7 +345,9 @@ class InstagramPublisher:
         if len(images) > 10:
             raise PublishError("Instagram: в карусели не больше 10 картинок")
         caption = html_to_plain(text)
+        note = ""
         if len(caption) > INSTAGRAM_LIMIT:
+            note = f"Instagram: подпись обрезана до {INSTAGRAM_LIMIT} знаков (было {len(caption)})."
             caption = caption[:INSTAGRAM_LIMIT - 1].rstrip() + "…"
         base = f"{self.user_id}/media"
         try:
@@ -325,7 +374,7 @@ class InstagramPublisher:
                     pass
         except httpx.HTTPError as e:
             raise PublishError(f"Instagram: {e!r}") from e
-        return PublishResult("instagram", url, media_id)
+        return PublishResult("instagram", url, media_id, note=note)
 
 
 def _yt_check(r: httpx.Response, service: str) -> None:

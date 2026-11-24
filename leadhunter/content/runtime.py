@@ -72,6 +72,7 @@ async def build_content(s: Settings, db, bot, llm, deps, notifier) -> ContentFac
         if notifier is not None:
             await notifier.send(text, topic="content", silent=True)
 
+    factory.notify = notify  # автопилот сообщает сюда, если не смог сделать черновик
     deps.extra.update(factory=factory, publishers=publishers, content_hour=s.content_hour,
                       deliver_to_team=deliver_to_team, content_notify=notify)
     return factory

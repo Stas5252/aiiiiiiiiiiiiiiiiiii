@@ -1,5 +1,6 @@
 """Рендер слайдов, обложек и кадров для видео на Pillow — без сети."""
 import io
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -12,6 +13,14 @@ _NAMES = {False: ("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regu
           True: ("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf")}
 
 
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def valid_color(c) -> bool:
+    """Цвет бренда — только #RRGGBB: другое Pillow либо не понимает, либо красит не так, как ждёт владелец."""
+    return isinstance(c, str) and bool(HEX_COLOR.match(c.strip()))
+
+
 @dataclass
 class Brand:
     name: str = ""
@@ -19,6 +28,14 @@ class Brand:
     primary: str = "#14141F"
     accent: str = "#7C5CFF"
     text: str = "#FFFFFF"
+
+    def __post_init__(self):
+        # неверный цвет (из старой настройки или кабинета) не должен ронять рендер — берём цвет по умолчанию
+        for key in ("primary", "accent", "text"):
+            value = getattr(self, key)
+            setattr(self, key, value.strip() if valid_color(value) else type(self).__dataclass_fields__[key].default)
+        self.name = str(self.name or "")
+        self.handle = str(self.handle or "")
 
 
 @lru_cache(maxsize=None)
@@ -41,6 +58,32 @@ def load_font(size: int, bold: bool = False):
         except OSError:
             pass
     return ImageFont.load_default(size)
+
+
+_INVISIBLE = re.compile("[\u200b-\u200d\u2060\ufe00-\ufe0f\u20e3\U0001F3FB-\U0001F3FF\U000E0020-\U000E007F]")
+
+
+@lru_cache(maxsize=4096)
+def _has_glyph(ch: str, bold: bool) -> bool:
+    """Есть ли символ в шрифте: у отсутствующих (эмодзи) рисунок совпадает с «квадратом»-заглушкой."""
+    font = load_font(40, bold)
+    try:
+        blank, mask = font.getmask("\U000F0000"), font.getmask(ch)
+    except Exception:
+        return True
+    return (mask.size, bytes(mask)) != (blank.size, bytes(blank))
+
+
+def printable(text, bold: bool = False) -> str:
+    """Текст для картинки: без эмодзи и значков, которых нет в шрифте (иначе на слайде пустые квадраты)."""
+    text = _INVISIBLE.sub("", str(text or ""))
+    if text.isascii():
+        return text
+    out = "".join(ch for ch in text if ord(ch) < 0x2000 or _has_glyph(ch, bold))
+    if out == text:
+        return text
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return "\n".join(line.strip() for line in out.split("\n"))
 
 
 def wrap_text(draw, text: str, font, max_width: int) -> list[str]:
@@ -79,13 +122,15 @@ def _mix(fg: str, bg: str, a: float) -> tuple[int, int, int]:
 
 
 def _rgb(c: str) -> tuple[int, int, int]:
-    c = c.lstrip("#")
+    if not valid_color(c):
+        c = Brand.primary
+    c = c.strip().lstrip("#")
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
 
 
 def _fit(draw, text, bold, max_w, max_h, start, min_size, spacing=1.25):
     """Подбирает шрифт и обрезает «…», чтобы текст влез в max_w × max_h."""
-    text = text.strip()[:1500]  # остальное всё равно уйдёт в «…»
+    text = printable(text, bold).strip()[:1500]  # остальное всё равно уйдёт в «…»
     size = start
     while True:
         font = load_font(size, bold)
@@ -125,10 +170,11 @@ def _footer(d, brand: Brand, size, m):
     font = load_font(26)
     col = _mix(brand.text, brand.primary, 0.5)
     y = size[1] - int(size[1] * 0.05) - 30
-    if brand.name:
-        d.text((m, y), brand.name, font=font, fill=col)
-    if brand.handle:
-        d.text((size[0] - m - d.textlength(brand.handle, font=font), y), brand.handle, font=font, fill=col)
+    name, handle = printable(brand.name), printable(brand.handle)
+    if name:
+        d.text((m, y), name, font=font, fill=col)
+    if handle:
+        d.text((size[0] - m - d.textlength(handle, font=font), y), handle, font=font, fill=col)
 
 
 def _png(img: Image.Image) -> bytes:
@@ -138,6 +184,7 @@ def _png(img: Image.Image) -> bytes:
 
 
 def render_slide(title: str, body: str, index: int, total: int, brand: Brand, size=(1080, 1350)) -> bytes:
+    title, body = printable(title, True), printable(body)
     img, d, m = _canvas(brand, size)
     w, h = size
     cover = index == 1
@@ -166,14 +213,30 @@ def render_slide(title: str, body: str, index: int, total: int, brand: Brand, si
 
 def render_carousel(slides: list[dict], brand: Brand, size=(1080, 1350)) -> list[bytes]:
     n = len(slides)
-    return [render_slide(s.get("title", ""), s.get("text", ""), i, n, brand, size) for i, s in enumerate(slides, 1)]
+    slides = [s if isinstance(s, dict) else {"title": "", "text": s} for s in slides or []]
+    return [render_slide(str(s.get("title") or ""), str(s.get("text") or ""), i, n, brand, size)
+            for i, s in enumerate(slides, 1)]
 
 
-def render_cover(title: str, subtitle: str, brand: Brand, size=(1080, 1080)) -> bytes:
-    return render_slide(title, subtitle, 1, 1, brand, size)
+COVER_SIZE = (1080, 1350)  # 4:5 — как слайды карусели: целиком встаёт в ленту Instagram, Threads, VK и Telegram
+
+
+def same_line(a: str, b: str) -> bool:
+    """Одна и та же строка с точностью до регистра, пробелов и знаков по краям."""
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", str(s or "")).strip(" .!?…—-:;,«»\"'").lower()
+    a, b = norm(a), norm(b)
+    return bool(a) and (a == b or a.startswith(b) or b.startswith(a)) if b else False
+
+
+def render_cover(title: str, subtitle: str, brand: Brand, size=COVER_SIZE) -> bytes:
+    if same_line(title, subtitle):
+        subtitle = ""  # подзаголовок не должен повторять заголовок
+    return render_slide(title or "", subtitle or "", 1, 1, brand, size)
 
 
 def render_scene(text: str, brand: Brand, size=(1080, 1920), subtitle: str = "") -> bytes:
+    text, subtitle = printable(text, True), printable(subtitle)
     img, d, m = _canvas(brand, size)
     w, h = size
     max_w = w - 2 * m

@@ -129,6 +129,7 @@ class GeminiMedia:
         if not self.tts_enabled or not text.strip():
             return None
         model = self.tts_model
+        waited = False
         for attempt in range(3):
             try:
                 return await self._speech(model, text)
@@ -148,6 +149,9 @@ class GeminiMedia:
                     elif re.search(r"retry in \d+h", msg, re.I) and model != TTS_FALLBACK:
                         model = TTS_FALLBACK
                         continue
+                if waited:
+                    raise  # минутный лимит не отпустил и после паузы — ждать дальше бессмысленно, ролик выйдет без звука
+                waited = True
                 await _sleep(wait)
         return None
 
