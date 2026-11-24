@@ -53,6 +53,7 @@ LEAD_COLUMNS = {
     "msg_chat_id": "INTEGER", "msg_id": "INTEGER", "thread_id": "INTEGER",
     "sla_pinged": "INTEGER NOT NULL DEFAULT 0", "followup_at": "TEXT", "followup_count": "INTEGER NOT NULL DEFAULT 0",
     "phrase": "TEXT", "rule": "TEXT", "author_bio": "TEXT", "freshness": "TEXT", "competitors": "INTEGER",
+    "why": "TEXT",
     # pending = карточку надо доставить (не «тихий» лид и не пауза); attempts — сколько раз досылали
     "pending": "INTEGER NOT NULL DEFAULT 0", "attempts": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -180,18 +181,19 @@ class Database:
     # --- лиды ---
     async def save_lead(self, lead: Lead, score: int, res: ScoreResult, *, summary: str | None = None,
                         service: str = "", budget: str = "", urgency: str = "", draft: str = "",
-                        rule: str = "", author_bio: str = "", freshness: str = "", pending: bool = False) -> int:
+                        rule: str = "", author_bio: str = "", freshness: str = "", why: str = "",
+                        pending: bool = False) -> int:
         """pending — карточку надо доставить: пока у лида нет msg_id, её досылает фоновый цикл."""
         matched = json.dumps({"topic": res.topic, "intent": res.intent, "negative": res.negative}, ensure_ascii=False)
         cur = await self.conn.execute(
             "INSERT INTO leads (source, external_id, url, title, text, author, contact, score, matched, summary,"
             " service, budget, urgency, draft, chat_key, chat_title, phrase, rule, author_bio, freshness, competitors,"
-            " pending, found_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " why, pending, found_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (lead.source, lead.external_id, lead.url, lead.title, lead.text, lead.author, lead.contact,
              score, matched, summary, service, budget, urgency, draft,
              lead.extra.get("chat_key"), lead.extra.get("chat_title"), lead.extra.get("phrase"), rule, author_bio,
-             freshness, lead.competitors, int(pending), utc_iso(lead.found_at), _now()),
+             freshness, lead.competitors, why, int(pending), utc_iso(lead.found_at), _now()),
         )
         await self.conn.commit()
         lead_id = cur.lastrowid

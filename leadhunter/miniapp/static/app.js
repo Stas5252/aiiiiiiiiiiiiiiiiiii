@@ -40,21 +40,24 @@ const haptic = { tap: () => tg?.HapticFeedback?.impactOccurred("light"), ok: () 
 
 /* ---------- навигация ---------- */
 let me = null;
-const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, content: loadContent, settings: loadSettings };
+const screens = { today: loadToday, leads: () => loadLeads(), stats: loadStats, content: loadContent, settings: loadSettings, brief: loadBrief };
 let current = "today";
 function show(name) {
   current = name;
   $$(".screen").forEach((s) => s.classList.toggle("active", s.id === "screen-" + name));
   $$(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.screen === name));
-  $(".tabbar").classList.toggle("hidden", name === "settings");
-  if (name === "settings") tg?.BackButton?.show(); else tg?.BackButton?.hide();
+  const inner = name === "settings" || name === "brief";
+  $(".tabbar").classList.toggle("hidden", inner);
+  if (inner) tg?.BackButton?.show(); else tg?.BackButton?.hide();
   window.scrollTo(0, 0);
   return screens[name]?.();
 }
 $$(".tabbar button").forEach((b) => b.onclick = () => { haptic.sel(); show(b.dataset.screen); });
 $("#open-settings").onclick = () => show("settings");
 $$("[data-back]").forEach((b) => b.onclick = () => show("today"));
-tg?.BackButton?.onClick(() => { if (!$("#sheet").classList.contains("hidden")) closeSheet(); else show("today"); });
+tg?.BackButton?.onClick(() => { if (!$("#sheet").classList.contains("hidden")) closeSheet(); else show(current === "brief" ? "settings" : "today"); });
+$("#open-brief").onclick = () => show("brief");
+$("#brief-back").onclick = () => show("settings");
 
 /* ---------- карточка-строка лида ---------- */
 function leadRow(l, opts = {}) {
@@ -145,14 +148,14 @@ async function loadSetupBanner() {
   if (setupHidden()) return box.classList.add("hidden");
   try {
     const s = await api("/api/settings");
-    const needNiche = !s.niche, needAi = !s.summary?.ai && Boolean(me?.is_owner);
-    box.classList.toggle("hidden", !(needNiche || needAi));
-    $("#today-setup-list").textContent = `${needNiche ? "○" : "●"} ниша` + (me?.is_owner ? ` · ${needAi ? "○" : "●"} ключ ИИ` : "");
-    setupTarget = needNiche ? "#card-niche" : "#card-integ";
+    const owner = Boolean(me?.is_owner), needNiche = !s.niche, needBrief = !s.brief_filled && owner, needAi = !s.summary?.ai && owner;
+    box.classList.toggle("hidden", !(needNiche || needBrief || needAi));
+    $("#today-setup-list").textContent = `${needNiche ? "○" : "●"} ниша` + (owner ? ` · ${needBrief ? "○" : "●"} бриф · ${needAi ? "○" : "●"} ключ ИИ` : "");
+    setupTarget = needNiche ? "#card-niche" : needBrief ? "brief" : "#card-integ";
   } catch (_) { box.classList.add("hidden"); }
 }
 $("#today-setup-x").onclick = () => { try { sessionStorage.setItem("setup-hidden", "1"); } catch (_) {} $("#today-setup").classList.add("hidden"); };
-$("#today-setup-go").onclick = async () => { await show("settings"); $(setupTarget)?.scrollIntoView({ block: "start" }); };
+$("#today-setup-go").onclick = async () => { if (setupTarget === "brief") return show("brief"); await show("settings"); $(setupTarget)?.scrollIntoView({ block: "start" }); };
 
 /* ---------- Лиды ---------- */
 const flt = { status: "open", service: "", q: "", offset: 0 };
@@ -212,6 +215,7 @@ async function openLead(id) {
       <span>· ${fmtTime(l.created_at)}</span>
     </div>
     ${l.summary ? `<div class="ai">${esc(l.summary)}</div>` : ""}
+    ${l.why ? `<div class="ai why">${esc(l.why)}</div>` : ""}
     ${l.title && l.summary ? `<div class="text"><b>${esc(l.title)}</b></div>` : ""}
     <div class="text clamp" id="lead-text">${esc(l.text)}</div>
     ${l.text.length > 400 ? `<button class="text" id="expand" style="padding:0">Показать полностью</button>` : ""}
@@ -362,6 +366,8 @@ function renderSettings(s) {
   $("#row-ch-vk").classList.toggle("hidden", !s.publish_vk);
   const owner = Boolean(me?.is_owner);
   $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
+  $("#brief-count").textContent = s.brief_filled ? `заполнено ${s.brief_filled} из ${s.brief_total}` : "не заполнен — ИИ знает о вас одну строку";
+  $("#s-profile-hint").textContent = s.brief_filled ? "— запасное описание: ИИ опирается на бриф" : "— ИИ оценивает лидов по этому описанию";
   // пауза, каналы и состав команды — только владелец (сервер проверяет то же самое)
   for (const id of ["#s-paused", "#s-ch-telegram", "#s-ch-vk"]) $(id).disabled = !owner;
   $("#s-paused-hint").textContent = owner ? "лиды копятся, но не присылаются" : "включает и выключает владелец";
@@ -394,6 +400,45 @@ const confirmAsk = (text) => new Promise((ok) => (inTelegram && tg.showConfirm) 
 async function loadSettings() {
   try { if (!me) me = (await api("/api/me")).user; renderSettings(await api("/api/settings")); } catch (e) { toast(e.message); }
 }
+
+/* ---------- Бриф ---------- */
+let B = null;
+function renderBrief(b, fields = true) {
+  B = b;
+  const ro = !b.can_edit;
+  $("#brief-intro").textContent = ro ? "Бриф заполняет владелец. По нему ИИ отбирает заказы, пишет отклики и контент."
+    : `Заполнено ${b.filled} из ${b.total}. По брифу ИИ отбирает заказы, пишет отклики и контент. Каждое поле сохраняется само.`;
+  $("#brief-fill").classList.toggle("hidden", ro);
+  $("#brief-fill-go").disabled = !b.ai;
+  $("#brief-fill-hint").textContent = b.ai ? "ИИ заполнит только пустые поля. Проверьте и поправьте." : "Нужен ключ ИИ: Настройки → Подключения.";
+  if (!fields) return;  // после сохранения одного поля форму не перерисовываем: человек уже печатает в следующем
+  $("#brief-fields").innerHTML = b.fields.map((f) => `<div class="row-setting col">
+      <div class="label">${esc(f.title)} <span class="hint">— ${esc(f.question)}</span></div>
+      ${f.key === "min_budget" ? `<input type="text" inputmode="numeric" data-brief="${f.key}" maxlength="${f.limit}" placeholder="${esc(f.example)}" value="${esc(b.brief[f.key])}" ${ro ? "disabled" : ""}>`
+        : `<textarea data-brief="${f.key}" rows="${f.limit > 1500 ? 4 : 2}" maxlength="${f.limit}" placeholder="${esc(f.example)}" ${ro ? "disabled" : ""}>${esc(b.brief[f.key])}</textarea>`}
+    </div>`).join("");
+  $$("[data-brief]").forEach((el) => el.onchange = () => saveBrief({ [el.dataset.brief]: el.value }, "Сохранено", false));
+}
+async function saveBrief(patch, done, fields = true) {
+  try { renderBrief(await api("/api/brief", { method: "POST", body: JSON.stringify(patch) }), fields); haptic.ok(); toast(done); return true; }
+  catch (e) { haptic.err(); toast(e.message); return false; }
+}
+async function loadBrief() {
+  try { if (!me) me = (await api("/api/me")).user; renderBrief(await api("/api/brief")); } catch (e) { toast(e.message); }
+}
+$("#brief-fill-go").onclick = async () => {
+  const src = $("#brief-source").value.trim(), btn = $("#brief-fill-go");
+  if (!src) return toast("Вставьте текст о себе или ссылку на сайт");
+  btn.disabled = true; btn.textContent = "Читаю…";
+  try {
+    const found = (await api("/api/brief/fill", { method: "POST", body: JSON.stringify({ source: src }) })).brief;
+    const patch = Object.fromEntries(Object.entries(found).filter(([k, v]) => v && !B.brief[k]));
+    const n = Object.keys(patch).length;
+    if (!n) toast("Новых сведений для пустых полей не нашлось");
+    else if (await saveBrief(patch, `Заполнено полей: ${n}. Проверьте и поправьте`)) $("#brief-source").value = "";
+  } catch (e) { haptic.err(); toast(e.message); }
+  btn.disabled = !B?.ai; btn.textContent = "Разложить по полям";
+};
 
 /* ниша, свежесть, контент, площадки, подключения */
 const setVal = (id, v) => { const el = $(id); if (el !== document.activeElement) el.value = v ?? ""; };

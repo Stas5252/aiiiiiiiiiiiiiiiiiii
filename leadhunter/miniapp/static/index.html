@@ -115,6 +115,12 @@
       <button class="icon back" data-back aria-label="Назад">‹</button>
       <h1>Настройки</h1>
     </header>
+    <div class="card" id="card-brief">
+      <div class="row-setting" id="open-brief" role="button" tabindex="0">
+        <div><div class="label">Бриф</div><div class="hint" id="brief-count">кто вы, услуги, цены, кейсы, тон</div></div>
+        <span class="chev" aria-hidden="true">›</span>
+      </div>
+    </div>
     <div class="card"><h2>Контент и соцсети</h2>
 <label class="row-setting">Посты<span class="switch"><input type="checkbox" data-feature="format_post"><span></span></span></label>
 <label class="row-setting">Карусели<span class="switch"><input type="checkbox" data-feature="format_carousel"><span></span></span></label>
@@ -148,7 +154,7 @@
         <input id="s-geo" type="text" placeholder="Пусто — вся страна">
       </div>
       <div class="row-setting col">
-        <div class="label">Что продаёте <span class="hint">— ИИ оценивает лидов по этому описанию</span></div>
+        <div class="label">Что продаёте <span class="hint" id="s-profile-hint">— ИИ оценивает лидов по этому описанию</span></div>
         <textarea id="s-profile" rows="3"></textarea>
       </div>
     </div>
@@ -258,6 +264,22 @@
       <div id="s-team" class="rows"></div>
       <p class="hint">Чтобы попасть в команду, нажмите любую кнопку в рабочей группе.</p>
     </details>
+  </section>
+
+  <!-- Экран: Бриф (открывается из Настроек) -->
+  <section id="screen-brief" class="screen">
+    <header class="top">
+      <button class="icon back" id="brief-back" aria-label="Назад">‹</button>
+      <h1>Бриф</h1>
+    </header>
+    <p class="hint" id="brief-intro">По брифу ИИ отбирает заказы, пишет отклики и контент. Каждое поле сохраняется само.</p>
+    <div class="card" id="brief-fill">
+      <div class="card-title">Заполнить за меня</div>
+      <textarea id="brief-source" rows="3" placeholder="Вставьте текст о себе или ссылку на свой сайт"></textarea>
+      <button class="wide" id="brief-fill-go">Разложить по полям</button>
+      <p class="hint" id="brief-fill-hint">ИИ заполнит только пустые поля. Проверьте и поправьте.</p>
+    </div>
+    <div class="card" id="brief-fields"></div>
   </section>
 
   <nav class="tabbar">

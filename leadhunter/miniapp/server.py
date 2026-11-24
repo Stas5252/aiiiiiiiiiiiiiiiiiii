@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 
-from .. import features
+from .. import brief, features
 from ..db import Database
 from ..filters import parse_rule
 from ..models import Lead
@@ -223,6 +223,8 @@ class MiniAppAPI:
         return web.json_response({
             "threshold": await self.db.get_setting("threshold", str(self.deps.extra.get("threshold", 5))),
             "profile": await self.db.get_setting("profile") or self.deps.default_profile,
+            "brief_filled": brief.filled(await brief.load(self.db)),
+            "brief_total": len(brief.FIELDS),
             "geo": await self.db.get_setting("geo", ""),
             **{key: await features.enabled(self.db, key) for key in FLAGS if key not in ("paused", "autopilot")},
             "paused": (await self.db.get_setting("paused")) == "1",
@@ -311,6 +313,48 @@ class MiniAppAPI:
             await fn(*args)
         log.info("settings changed by %s: %s", user["id"], list(body))
         return await self.settings_get(request)
+
+    async def _brief(self, user) -> web.Response:
+        data = await brief.load(self.db)
+        return web.json_response({
+            "fields": [{"key": f.key, "title": f.title, "question": f.question, "example": f.example, "limit": f.limit}
+                       for f in brief.FIELDS],
+            "brief": data, "filled": brief.filled(data), "total": len(brief.FIELDS),
+            "ai": bool(self.deps.llm), "can_edit": bool(user["is_owner"]),
+        })
+
+    async def brief_get(self, request):
+        return await self._brief(await self.user(request))
+
+    async def brief_set(self, request):
+        """Бриф — от чьего имени ИИ пишет клиентам, поэтому меняет его только владелец."""
+        user = await self.user(request)
+        if not user["is_owner"]:
+            raise web.HTTPForbidden(text="бриф заполняет владелец")
+        try:
+            await brief.save(self.db, await json_object(request))
+        except brief.BriefError as e:
+            raise bad(str(e))
+        log.info("brief changed by %s", user["id"])
+        return await self._brief(user)
+
+    async def brief_fill(self, request):
+        """«Заполнить за меня»: текст о себе или ссылка на сайт → поля брифа. Ничего не сохраняет."""
+        from ..content.generator import ai_error_text
+        user = await self.user(request)
+        if not user["is_owner"]:
+            raise web.HTTPForbidden(text="бриф заполняет владелец")
+        if not self.deps.llm:
+            raise bad("ИИ не подключён. Подключите его в Настройках → Подключения или командой /setup в боте.")
+        source = to_str((await json_object(request)).get("source", ""), "source", 12000)
+        try:
+            found = await brief.fill_from(self.deps.llm, source)
+        except brief.BriefError as e:
+            raise bad(str(e))
+        except Exception as e:
+            log.warning("бриф: ИИ не смог разложить текст (%s)", type(e).__name__)
+            raise bad(ai_error_text(e))
+        return web.json_response({"brief": found})
 
     async def integration_set(self, request):
         """Ключи API: проверка живым запросом, сохранение в базе, применение без перезапуска. Только владелец."""
@@ -611,6 +655,9 @@ def build_app(api: MiniAppAPI) -> web.Application:
     r.add_get("/api/stats", api.stats)
     r.add_get("/api/settings", api.settings_get)
     r.add_post("/api/settings", api.settings_set)
+    r.add_get("/api/brief", api.brief_get)
+    r.add_post("/api/brief", api.brief_set)
+    r.add_post("/api/brief/fill", api.brief_fill)
     r.add_post("/api/integrations", api.integration_set)
     r.add_post("/api/rules", api.rule_add)
     r.add_delete("/api/rules/{id:\\d+}", api.rule_del)

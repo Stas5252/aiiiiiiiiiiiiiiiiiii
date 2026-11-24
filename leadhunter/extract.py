@@ -47,5 +47,46 @@ def extract_budget(text: str) -> str:
     return ""
 
 
+_MULT = {"млн": 1_000_000, "миллион": 1_000_000, "тыс": 1000, "т": 1000, "к": 1000, "k": 1000}
+_RUB_UNIT_RE = re.compile(r"₽|руб|р\.|т\.\s?р", re.I)  # единица сама называет рубли
+_RUB_AFTER_RE = re.compile(r"\.?\s*(?:₽|руб\w*\.?|р\b\.?)", re.I)  # «30 тыс. руб»
+# заказчик сам назвал сумму бюджетом — в том же предложении перед ней
+_CUE_RE = re.compile(r"(?:бюджет|оплат|заплат|плачу|платим|цен[аыу]|стоимост|гонорар|вознагражд)\w*[^.;!?\n]{0,40}$", re.I)
+_WHOLE = r"(?:весь|всю|вс[её]|все|проект|работ|заказ|сайт|бот|лендинг|разработк|создани|магазин)"
+_PER_UNIT_RE = re.compile(rf"\s*(?:/|в\s|за\s+(?!{_WHOLE}))", re.I)  # «за пост» — ставка, «за весь проект» — нет
+_ADVANCE_RE = re.compile(r"(?:аванс|предоплат|задат)\w*[\s:—–-]*(?:[^\d\s]+\s+)?$", re.I)
+_FROM_RE = re.compile(r"(?:^|\W)от\s+$", re.I)  # «от 5000 руб» — нижняя граница, а не весь бюджет
+
+
+def budget_rub(text: str) -> int | None:
+    """Бюджет заказа в рублях — только когда в нём нет сомнений; по нему заказы отсеиваются без ИИ.
+    Это наибольшая сумма в рублях, если заказчик сам назвал её бюджетом («бюджет», «оплата», «цена»…).
+    None — при любой неясности: есть сумма в валюте, «от …» или число без рублей («10к» — рублей,
+    долларов или просмотров?). Ставки «за час / в месяц / за пост» и аванс бюджетом не считаются."""
+    best, labelled = None, False
+    for m in BUDGET_RE.finditer(text):
+        if not _is_budget(m, text):
+            continue
+        unit, head, tail = m["unit"].lower(), text[:m.start()], text[m.end():]
+        if unit in ("$", "usd", "€"):
+            return None
+        if not _RUB_UNIT_RE.match(unit):
+            rub = _RUB_AFTER_RE.match(tail)
+            if not rub:
+                return None
+            tail = tail[rub.end():]
+        if _PER_UNIT_RE.match(tail) or _ADVANCE_RE.search(head[-40:]):
+            continue
+        if _FROM_RE.search(head):
+            return None
+        try:
+            amount = float(re.sub(r"[ \u00a0]", "", m["hi"]).replace(",", "."))
+        except ValueError:
+            return None
+        labelled = labelled or bool(_CUE_RE.search(head[-60:]))
+        best = max(best or 0, int(amount * next((v for k, v in _MULT.items() if unit.startswith(k)), 1)))
+    return best if labelled else None
+
+
 def strip_urls(text: str) -> str:
     return URL_RE.sub("", text)

@@ -8,7 +8,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from .. import features
+from .. import brief, features
 from ..db import Database
 from ..llm import LLMClassifier
 from .store import ContentStore
@@ -17,7 +17,8 @@ log = logging.getLogger(__name__)
 
 SYSTEM = """Ты — контент-маркетолог студии. Пишешь по-русски, живым языком, без канцелярита, без воды и без
 клише вроде «в современном мире». Конкретика, цифры, примеры, польза для читателя. Эмодзи — умеренно.
-Профиль студии (что продаём): {profile}
+Кто исполнитель и что продаёт (бриф):
+{profile}
 {voice}{examples}{edits}{pains}
 Ответ — строго JSON по схеме, без пояснений."""
 
@@ -162,7 +163,7 @@ class ContentGenerator:
         return out
 
     async def _system(self, kind: str) -> str:
-        profile = await self.db.get_setting("profile", self.default_profile) or self.default_profile
+        profile = await brief.profile(self.db, self.default_profile)
         voice = await self.db.get_setting("voice", "")
         voice = f"Тон голоса (обязательно соблюдать): {voice}\n" if voice else ""
         examples = ""

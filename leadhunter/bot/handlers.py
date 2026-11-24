@@ -7,6 +7,7 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, ChatMemberUpdated, Message
 
+from .. import brief
 from ..db import Database
 from ..llm import LLMClassifier
 from ..phrases import PhraseProvider
@@ -25,7 +26,7 @@ NO_OWNER = """Бот ещё не знает, кто его владелец, п�
 
 Ваш Telegram id: <code>{uid}</code>"""
 
-HELP = """Я ищу лидов и делаю контент под вашу нишу. /niche — выбрать нишу одной командой, /app — кабинет.
+HELP = """Я ищу лидов и делаю контент под вашу нишу. /niche — выбрать нишу одной командой, /brief — рассказать о себе, /app — кабинет.
 
 <b>Рабочая группа</b>
 /setup_group — выполнить в группе-форуме: бот создаст темы (Горячие, Сайты, Боты…) и будет слать лидов туда
@@ -76,16 +77,18 @@ class BotDeps:
 
 
 async def onboarding_text(deps: "BotDeps", first: bool) -> str:
-    """/start: что уже работает и какие 3 шага остались — вместо простыни команд (она в /help)."""
+    """/start: что уже работает и какие шаги остались — вместо простыни команд (она в /help)."""
     integ = deps.extra.get("integrations")
     sm = integ.summary() if integ else {}
     niche = await deps.db.get_setting("niche")
+    has_brief = brief.filled(await brief.load(deps.db))
     ws = await deps.db.get_setting("workspace_chat_id")
     hello = "Привет! Я ищу вам клиентов и делаю контент." if first else "Я ищу лидов и делаю контент под вашу нишу."
     steps = [
         f"{'✅' if niche else '1️⃣'} Ниша — /niche" + ("" if niche else " (одна команда настраивает всё под вашу сферу)"),
-        f"{'✅' if sm.get('ai') else '2️⃣'} Ключ ИИ — /setup" + ("" if sm.get("ai") else " (бесплатный Gemini: 2 минуты)"),
-        f"{'✅' if sm.get('miniapp') else '3️⃣'} Кабинет — /app" + ("" if sm.get("miniapp") else " (Mini App с лидами, отчётами и контентом)"),
+        f"{'✅' if has_brief else '2️⃣'} Бриф — /brief" + ("" if has_brief else " (вопросы о вас: по нему ИИ отбирает заказы и пишет отклики)"),
+        f"{'✅' if sm.get('ai') else '3️⃣'} Ключ ИИ — /setup" + ("" if sm.get("ai") else " (бесплатный Gemini: 2 минуты)"),
+        f"{'✅' if sm.get('miniapp') else '4️⃣'} Кабинет — /app" + ("" if sm.get("miniapp") else " (Mini App с лидами, отчётами и контентом)"),
         f"{'✅' if ws else '▫️'} Группа для команды — /setup_group (необязательно)",
     ]
     return (f"{hello} Лиды приходят сюда с кнопками «Беру / Горячий / Не лид», контент для Threads и Instagram — по командам /post, /carousel, /ideas.\n\n"
@@ -94,7 +97,8 @@ async def onboarding_text(deps: "BotDeps", first: bool) -> str:
 
 def onboarding_keyboard(deps: "BotDeps"):
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-    row = [InlineKeyboardButton(text="🧭 Ниша", callback_data="ob:niche"), InlineKeyboardButton(text="🔌 Подключения", callback_data="ob:setup")]
+    row = [InlineKeyboardButton(text="🧭 Ниша", callback_data="ob:niche"), InlineKeyboardButton(text="📝 Бриф", callback_data="ob:brief"),
+           InlineKeyboardButton(text="🔌 Подключения", callback_data="ob:setup")]
     url = deps.extra.get("miniapp_url")
     if url:
         row.append(InlineKeyboardButton(text="📱 Кабинет", web_app=WebAppInfo(url=url)))
@@ -420,9 +424,13 @@ def build_router(deps: BotDeps) -> Router:
             return
         if not command.args:
             cur = await db.get_setting("profile") or deps.default_profile
-            await m.answer(f"Профиль студии для ИИ:\n{html.escape(cur)}\n\nИзменить: /profile текст")
+            await m.answer(f"Профиль студии для ИИ:\n{html.escape(cur)}\n\nИзменить: /profile текст\n"
+                           "Подробно о себе — цены, кейсы, тон: /brief")
             return
         await db.set_setting("profile", command.args.strip())
+        if brief.filled(await brief.load(db)):
+            await m.answer("Профиль обновлён. Заполнен бриф — ИИ опирается на него, а это описание запасное: /brief")
+            return
         await m.answer("Профиль обновлён — ИИ будет оценивать лидов с учётом него.")
 
     @router.message(Command("phrases"))
@@ -454,7 +462,7 @@ def build_router(deps: BotDeps) -> Router:
         if not deps.llm:
             await m.answer("ИИ не подключён — добавьте ключ в /setup.")
             return
-        profile = await db.get_setting("profile", deps.default_profile) or deps.default_profile
+        profile = await brief.profile(db, deps.default_profile)
         try:
             ps = await deps.phrases.generate(deps.llm, profile)
         except Exception as e:
