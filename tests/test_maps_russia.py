@@ -118,6 +118,16 @@ def test_unknown_directory_is_recognized_by_shared_inner_pages():
     assert company_site(items[2], shared)[0] == "https://palchiki.ru/saratov/chapaeva"
 
 
+def test_shared_company_site_with_home_page_link_is_not_a_directory():
+    """Было: общий сайт сети с разными вывесками считался справочником — даже у карточки со ссылкой на главную."""
+    items = [org(1, "Ресторан Гинза", ["https://ginza.example"]),
+             org(2, "Терраса", ["https://ginza.example/spb/terrassa"]),
+             org(3, "Мансарда", ["https://ginza.example/spb/mansarda?utm_source=maps"])]
+    assert shared_hosts(items) == set()
+    assert [company_site(x, shared_hosts(items))[0] for x in items] == [
+        "https://ginza.example", "https://ginza.example/spb/terrassa", "https://ginza.example/spb/mansarda"]
+
+
 def test_competitors_do_not_include_directory_pages():
     """Было: в конкурентах «с сайтом» оказывалась страница saratov.spravker.ru."""
     items = [org(1, "Клиент"), org(2, "Лав", [SPRAVKER]), org(3, "В контакте", ["https://vk.com/nails"]),

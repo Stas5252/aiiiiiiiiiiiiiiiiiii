@@ -57,15 +57,19 @@ def clean_site(url: str) -> str:
 
 def shared_hosts(items: list[dict]) -> set[str]:
     """Справочники, которых нет в списке: один домен стоит в карточках компаний с разными названиями, и везде это
-    внутренняя страница, а не главная. У сети филиалов название одно, у справочника — разные."""
+    внутренняя страница. У сети филиалов название одно, у справочника — разные. Если хоть одна карточка ведёт
+    на главную страницу домена, это чей-то собственный сайт (например, общий сайт сети с разными вывесками)."""
     seen: dict[str, set[str]] = {}
+    own: set[str] = set()
     for item in items:
         for url in item.get("urls") or []:
             parts = urlsplit(url if "//" in url else "//" + url)
             host = host_of(url)
-            if host and parts.path.strip("/") and not any(host.endswith("." + own) for own in OWN_ON_SUBDOMAIN):
+            if not parts.path.strip("/") or any(host.endswith("." + x) for x in OWN_ON_SUBDOMAIN):
+                own.add(host)
+            elif host:
                 seen.setdefault(host, set()).add(" ".join((item.get("title") or "").lower().split()))
-    return {host for host, titles in seen.items() if len(titles) > 1}
+    return {host for host, titles in seen.items() if len(titles) > 1 and host not in own}
 
 
 def company_site(item: dict, shared: set[str] | frozenset[str] = frozenset()) -> tuple[str, str]:
