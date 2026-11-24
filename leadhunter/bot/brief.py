@@ -10,6 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from .. import brief
+from .text import split_text
 
 log = logging.getLogger(__name__)
 PRIVATE_ONLY = "Бриф показываю и заполняю только в личке — напишите мне /brief там."
@@ -210,10 +211,14 @@ def build_brief_router(deps) -> Router:
         await state.set_state(BriefState.fill)
         await state.update_data(found=found)
         lines = ["<b>Вот что я понял:</b>"]
-        lines += [f"<b>{html.escape(brief.BY_KEY[k].title)}:</b> {html.escape(v[:300])}" for k, v in found.items()]
+        # показываем целиком то, что будет сохранено: длинный текст — несколькими сообщениями
+        lines += [f"<b>{html.escape(brief.BY_KEY[k].title)}:</b> {html.escape(v)}" for k, v in found.items()]
         lines.append("\nСохранить? Заполненные раньше поля заменю этими; остальные не трону. Любое поле потом можно поправить.")
-        await wait.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            _btn("✅ Сохранить", "br:fillok"), _btn("◀️ Отмена", "br:done")]]))
+        kb = InlineKeyboardMarkup(inline_keyboard=[[_btn("✅ Сохранить", "br:fillok"), _btn("◀️ Отмена", "br:done")]])
+        parts = split_text("\n".join(lines))
+        await wait.edit_text(parts[0], reply_markup=kb if len(parts) == 1 else None)
+        for i, part in enumerate(parts[1:], 2):
+            await m.answer(part, reply_markup=kb if i == len(parts) else None)
 
     @router.callback_query(F.data == "br:fillok")
     async def fill_save(cq: CallbackQuery, state: FSMContext):

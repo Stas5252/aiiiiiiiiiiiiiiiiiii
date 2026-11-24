@@ -532,6 +532,21 @@ async def test_bot_fill_for_me_saves_only_after_confirmation(env):
     assert "Предложение устарело" in "".join(await env.press("br:fillok"))  # второй раз сохранять нечего
 
 
+async def test_bot_fill_for_me_shows_everything_it_is_going_to_save(env):
+    long_cases = " ".join(f"Кейс {i}: сайт для клиники, заявок стало больше." for i in range(60))  # ~3000 знаков
+    long_edge = "Сдаю в срок. " * 110 + "ХВОСТ-ПРЕИМУЩЕСТВ"
+    env.deps.llm = FillLLM({"who": "Студия", "cases": long_cases, "edge": long_edge, "services": "Сайты. " * 200})
+    await env.tap("br:fill")
+    said = await env.say("Мы студия, у нас много кейсов и преимуществ, вот они все подряд")
+    assert "Кейс 59" in said and "ХВОСТ-ПРЕИМУЩЕСТВ" in said  # концы длинных полей тоже показаны
+    sent = env.named("SendMessage", "EditMessageText")
+    assert len(sent) > 1 and not env.named("SendMessage:REJECTED", "EditMessageText:REJECTED")
+    assert [bool(d.get("reply_markup")) for d in sent[1:]] == [False] * (len(sent) - 2) + [True]  # кнопки — под последним
+    await env.tap("br:fillok")
+    data = await brief.load(env.db)
+    assert data["cases"] in said.replace("\n", " ") and data["edge"].endswith("ХВОСТ-ПРЕИМУЩЕСТВ")
+
+
 async def test_bot_fill_for_me_explains_failures(env):
     env.deps.llm = FillLLM({})
     await env.tap("br:fill")
