@@ -47,5 +47,27 @@ def extract_budget(text: str) -> str:
     return ""
 
 
+_MULT = {"млн": 1_000_000, "миллион": 1_000_000, "тыс": 1000, "т": 1000, "к": 1000, "k": 1000}
+_PER_UNIT_RE = re.compile(r"\s*(?:/|в\s|за\s)", re.I)
+_FROM_RE = re.compile(r"(?:^|\W)от\s+$", re.I)  # «от 5000 руб» — нижняя граница, а не весь бюджет
+
+
+def budget_rub(text: str) -> int | None:
+    """Бюджет заказа в рублях (верхняя граница диапазона). None — суммы нет, она в валюте, названа
+    как «от …» или это ставка «за час / в месяц / за пост», а не цена всего заказа."""
+    for m in BUDGET_RE.finditer(text):
+        if not _is_budget(m, text):
+            continue
+        unit = m["unit"].lower()
+        if unit in ("$", "usd", "€") or _PER_UNIT_RE.match(text[m.end():]) or _FROM_RE.search(text[:m.start()]):
+            return None
+        try:
+            amount = float(re.sub(r"[ \u00a0]", "", m["hi"]).replace(",", "."))
+        except ValueError:
+            return None
+        return int(amount * next((v for k, v in _MULT.items() if unit.startswith(k)), 1))
+    return None
+
+
 def strip_urls(text: str) -> str:
     return URL_RE.sub("", text)

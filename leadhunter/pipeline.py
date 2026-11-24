@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
+from . import brief
 from .db import Database
 from .dedup import NearDuplicateIndex
 from .extract import extract_budget, extract_contacts
@@ -32,6 +33,7 @@ class Enriched:
     rule: str = ""
     author_bio: str = ""
     freshness: str = ""  # «12 мин назад · 2 откл.» для бирж
+    why: str = ""  # почему лид подходит под бриф — одна строка от ИИ
 
 
 class Notifier(Protocol):
@@ -147,6 +149,10 @@ class Pipeline:
         rule, blocked = evaluate(lead.full_text, [r["expr"] for r in await self.db.rules()])
         if blocked:
             return False
+        # Бриф: заказ с названной суммой ниже минимального не присылаем (правило владельца сильнее)
+        if not rule and brief.below_min(lead.full_text, await brief.load(self.db)):
+            log.debug("%s/%s пропущен: бюджет ниже минимального из брифа", lead.source, lead.external_id)
+            return False
         # Биржи: заказ старше N часов или с толпой откликов уже не забрать — не шлём
         fresh = Freshness.from_settings({"board_max_age_hours": await self.db.get_setting("board_max_age_hours"),
                                          "max_competitors": await self.db.get_setting("max_competitors")})
@@ -177,7 +183,7 @@ class Pipeline:
         lead_id = await self.db.save_lead(lead, info.score, info.res, summary=info.summary, service=info.service,
                                           budget=info.budget, urgency=info.urgency, draft=info.draft,
                                           rule=info.rule, author_bio=info.author_bio, freshness=info.freshness,
-                                          pending=deliver)
+                                          why=info.why, pending=deliver)
         if deliver:
             await self.notifier.notify(lead_id, lead, info)
         return True
@@ -218,7 +224,7 @@ class Pipeline:
                 bio = await self.author_bio(int(lead.extra["sender_id"]))
             except Exception:
                 log.debug("bio fetch failed", exc_info=True)
-        profile = await self.db.get_setting("profile", self.default_profile) or self.default_profile
+        profile = await brief.profile(self.db, self.default_profile)
         good = [r["text"] for r in await self.db.leads_by_status("hot", 5)]
         bad = [r["text"] for r in await self.db.leads_by_status("spam", 5)]
         text = lead.full_text + (f"\n\n[Об авторе: {bio}]" if bio else "")
@@ -233,7 +239,7 @@ class Pipeline:
             return None
         return Enriched(verdict.score, res, summary=verdict.summary, service=verdict.service or service,
                         budget=verdict.budget or budget, urgency=verdict.urgency, draft=verdict.reply_draft,
-                        rule=rule or "", author_bio=bio)
+                        rule=rule or "", author_bio=bio, why=verdict.why)
 
     async def _template(self, service: str) -> str:
         return (await self.db.get_template(service) if service else None) or ""

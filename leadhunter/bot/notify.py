@@ -84,6 +84,8 @@ def format_lead(lead_id: int, lead: Lead, info: Enriched) -> str:
         lines.append(f"💬 Чат: {e(str(lead.extra['chat_title'])[:100])}")
     if info.summary:
         lines.append(f"🤖 {e(info.summary)}")
+    if info.why:
+        lines.append(f"✅ Почему вам подходит: {e(info.why)}")
     lines.append(e(lead.text[:900]) + ("…" if len(lead.text) > 900 else ""))
     meta = []
     if lead.author:
@@ -165,7 +167,8 @@ class TelegramNotifier:
                     extra={"chat_key": row["chat_key"], "chat_title": row["chat_title"]})
         info = Enriched(row["score"], res, summary=row["summary"], service=row["service"] or "", budget=row["budget"] or "",
                         urgency=row["urgency"] or "", draft=row["draft"] or "", rule=row["rule"] or "",
-                        author_bio=row["author_bio"] or "", freshness=(row["freshness"] or "") if "freshness" in row.keys() else "")
+                        author_bio=row["author_bio"] or "", freshness=(row["freshness"] or "") if "freshness" in row.keys() else "",
+                        why=(row["why"] or "") if "why" in row.keys() else "")
         return await self.notify(row["id"], lead, info)
 
     async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> bool:
