@@ -48,25 +48,40 @@ def extract_budget(text: str) -> str:
 
 
 _MULT = {"млн": 1_000_000, "миллион": 1_000_000, "тыс": 1000, "т": 1000, "к": 1000, "k": 1000}
+_RUB_UNIT_RE = re.compile(r"₽|руб|р\.|т\.\s?р", re.I)  # единица сама называет рубли
+_RUB_AFTER_RE = re.compile(r"\.?\s*(?:₽|руб|р\b)", re.I)  # «30 тыс. руб»
+_CUE_RE = re.compile(r"(?:бюджет|оплат|цен[аыу]|стоимост|плачу|гонорар|вознагражд)\w*[\s:—–-]*(?:\S+\s+){0,2}$", re.I)
 _PER_UNIT_RE = re.compile(r"\s*(?:/|в\s|за\s)", re.I)
 _FROM_RE = re.compile(r"(?:^|\W)от\s+$", re.I)  # «от 5000 руб» — нижняя граница, а не весь бюджет
 
 
 def budget_rub(text: str) -> int | None:
-    """Бюджет заказа в рублях (верхняя граница диапазона). None — суммы нет, она в валюте, названа
-    как «от …» или это ставка «за час / в месяц / за пост», а не цена всего заказа."""
+    """Бюджет заказа в рублях — самая большая сумма, названная в тексте. None — если её нельзя назвать
+    уверенно: суммы нет, она в валюте или «от …». Не считаются ставки «за час / в месяц / за пост» и
+    числа без рублей и без слова про деньги рядом («канал на 3 тыс. подписчиков», «30к просмотров»)."""
+    best = None
     for m in BUDGET_RE.finditer(text):
         if not _is_budget(m, text):
             continue
-        unit = m["unit"].lower()
-        if unit in ("$", "usd", "€") or _PER_UNIT_RE.match(text[m.end():]) or _FROM_RE.search(text[:m.start()]):
+        unit, head, tail = m["unit"].lower(), text[:m.start()], text[m.end():]
+        if unit in ("$", "usd", "€"):
+            return None
+        if not _RUB_UNIT_RE.match(unit):
+            rub = _RUB_AFTER_RE.match(tail)
+            if rub:
+                tail = tail[rub.end():]
+            elif not _CUE_RE.search(head[-40:]):
+                continue
+        if _PER_UNIT_RE.match(tail):
+            continue
+        if _FROM_RE.search(head):
             return None
         try:
             amount = float(re.sub(r"[ \u00a0]", "", m["hi"]).replace(",", "."))
         except ValueError:
-            return None
-        return int(amount * next((v for k, v in _MULT.items() if unit.startswith(k)), 1))
-    return None
+            continue
+        best = max(best or 0, int(amount * next((v for k, v in _MULT.items() if unit.startswith(k)), 1)))
+    return best
 
 
 def strip_urls(text: str) -> str:
