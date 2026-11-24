@@ -7,7 +7,8 @@ import os
 import time
 from dataclasses import dataclass
 
-from .. import features
+from .. import brief, features
+from . import browser_render, design, shots
 from .generator import NO_AI, ContentError, ContentGenerator, magnet_text
 from .images import MediaAI
 from .manual import MANUAL_HINT, manual_data
@@ -20,6 +21,7 @@ log = logging.getLogger(__name__)
 API_PLATFORMS = {"telegram": "Telegram", "vk": "VK", "threads": "Threads", "instagram": "Instagram", "youtube": "YouTube"}
 MANUAL_PLATFORMS = {"tiktok": "TikTok", "dzen": "Дзен", "pinterest": "Pinterest"}
 VIDEO_KINDS = ("reel", "toon", "aivideo")
+SIMPLE_NOTE = "нарисовано упрощённо: браузер для слайдов не запустился (установка: patchright install chromium)"
 VOICE_BUDGET = 300.0  # секунд на всю озвучку одного ролика: дольше ждать лимиты ИИ нет смысла
 
 
@@ -34,6 +36,19 @@ def error_text(e: BaseException, limit: int = 200) -> str:
 class Outcome:
     results: list  # PublishResult
     errors: list[str]
+
+
+def brand_from_brief(data: dict) -> dict:
+    """Имя, @контакт и сайт для подписи слайдов — из брифа."""
+    import re
+
+    contact = data.get("contact") or ""
+    who = (data.get("who") or "").split(",")[0].split(".")[0].strip()
+    handle = re.search(r"(?<![\w.])@[A-Za-z][\w.]{2,31}", contact)
+    site = re.search(r"(?<![@\w.-])(?:https?://)?((?:[\w-]+\.)+[a-zа-яё]{2,})(?![\w@])", contact, re.I)
+    return {"name": who if 0 < len(who) <= 24 and len(who.split()) <= 3 else "",
+            "handle": handle.group(0) if handle else "",
+            "site": site.group(1).lower().removeprefix("www.") if site else ""}
 
 
 def brand_from_setting(raw: str | None):
@@ -100,7 +115,60 @@ class ContentFactory:
         self.db = db
 
     async def brand(self):
-        return brand_from_setting(await self.db.get_setting("brand"))
+        """Подпись и цвета слайдов. Чего владелец не задал в /brand, берём из брифа: имя, @контакт и сайт."""
+        brand = brand_from_setting(await self.db.get_setting("brand"))
+        if not (brand.name and brand.handle and brand.site):
+            for key, value in brand_from_brief(await brief.load(self.db)).items():
+                if not getattr(brand, key):
+                    setattr(brand, key, value)
+        return brand
+
+    async def _draw(self, pages: list[str], fallback, *, allow: tuple[str, ...] = ()) -> tuple[list[bytes], str]:
+        """Слайды рисует браузер; его нет или он не справился — Pillow, теми же шрифтами, но проще."""
+        try:
+            return await browser_render.render_pages(pages, design.SLIDE_SIZE, allow=allow), ""
+        except browser_render.RenderUnavailable as e:
+            log.warning("слайды нарисованы упрощённо: %s", e)
+            return await asyncio.to_thread(fallback), SIMPLE_NOTE
+
+    async def _shots(self, slides: list) -> dict[int, str]:
+        """Снимки сайтов для слайдов с кейсами: только по ссылкам из брифа, не больше двух на карусель."""
+        allowed = shots.brief_urls(await brief.load(self.db))
+        out: dict[int, str] = {}
+        for i, s in enumerate(slides):
+            url = shots.norm(s.get("shot")) if isinstance(s, dict) else ""
+            if 0 < i and url in allowed and len(out) < shots.MAX_SHOTS:
+                path = await shots.site_shot(url, self.shots_dir)
+                if path:
+                    out[i] = path
+        return out
+
+    @property
+    def shots_dir(self) -> str:
+        return os.path.join(self.media.root, "shots")
+
+    async def _motion(self, page: str) -> str | None:
+        """Анимированная обложка — короткое видео для Reels и Threads. Не получилось — карусель остаётся без него."""
+        from .video import build_motion, ffmpeg_available
+
+        if not ffmpeg_available():
+            return None
+        try:
+            frames = (await browser_render.render_motion([page], design.SLIDE_SIZE, [design.MOTION_SECONDS]))[0]
+        except browser_render.RenderUnavailable:
+            return None
+        name = self.media.save(b"", ".mp4")
+        try:
+            await build_motion(frames, self.media.path(name))
+            if os.path.getsize(self.media.path(name)) == 0:
+                raise RuntimeError("видео получилось пустым")
+        except BaseException as e:
+            self.media.remove(name)
+            if not isinstance(e, Exception):
+                raise
+            log.warning("анимация обложки не собралась: %s", e)
+            return None
+        return name
 
     # --- создание ---
     async def create(self, kind: str, topic: str, *, created_by: str = "", lead_id: int | None = None,
@@ -163,7 +231,18 @@ class ContentFactory:
         media: dict = {}
         if row["kind"] == "carousel":
             slides = data.get("slides") or []
-            media["images"] = [self.media.save(png, ".png") for png in render_carousel(slides, brand)]
+            images = await self._shots(slides)
+            pages = design.carousel_html(slides, brand, images=images)
+            pngs, note = await self._draw(pages, lambda: render_carousel(slides, brand), allow=(self.shots_dir,))
+            media["images"] = [self.media.save(png, ".png") for png in pngs]
+            if note:
+                media["note"] = note
+            elif pages and await features.enabled(self.db, "format_motion"):
+                first = slides[0] if isinstance(slides[0], dict) else {"text": slides[0]}
+                motion = await self._motion(design.slide_html(str(first.get("title") or ""), str(first.get("text") or ""),
+                                                              1, len(slides), brand, motion=True))
+                if motion:
+                    media["motion"] = motion
         elif row["kind"] == "reel":
             voice = _Voice(self.ai)
             try:
@@ -206,11 +285,16 @@ class ContentFactory:
                 # подзаголовок — первая строка текста, которая не повторяет заголовок (иначе на обложке одно и то же дважды)
                 lines = [ln.strip() for ln in str(data.get("body") or "").split("\n") if ln.strip()]
                 subtitle = data.get("subtitle") or next((ln for ln in lines if not same_line(title, ln)), "")
-                media["images"] = [self.media.save(render_cover(title, str(subtitle)[:120], brand), ".png")]
+                subtitle = "" if same_line(title, subtitle) else str(subtitle)[:120]
+                pngs, note = await self._draw([design.cover_html(title, subtitle, brand)],
+                                              lambda: [render_cover(title, subtitle, brand)])
+                media["images"] = [self.media.save(pngs[0], ".png")]
+                if note:
+                    media["note"] = note
         old = media_json(row)
         await self.store.update(item_id, media=media)
-        for name in [*(old.get("images") or []), old.get("video")]:
-            if name and name not in (media.get("images") or []) and name != media.get("video"):
+        for name in [*(old.get("images") or []), old.get("video"), old.get("motion")]:
+            if name and name not in (media.get("images") or []) and name not in (media.get("video"), media.get("motion")):
                 self.media.remove(name)  # прошлые картинки и видео этого материала больше не нужны
         return media
 
@@ -240,7 +324,17 @@ class ContentFactory:
                            "audio": await voice.say(s.get("voice", ""))})
         if not scenes:
             raise RuntimeError("в сценарии нет сцен")
-        return await self._build(voice, scenes, lambda path: build_video(scenes, brand, path))
+        frames = None
+        if await features.enabled(self.db, "format_motion"):
+            # анимация сцены — 3–4 секунды: за это время все слова успевают выехать
+            seconds = [min(max(s["duration"], 3.0), design.MOTION_SECONDS) for s in scenes]
+            pages = [design.scene_html(s["text"], brand, index=i, total=len(scenes), seconds=sec)
+                     for i, (s, sec) in enumerate(zip(scenes, seconds), 1)]
+            try:
+                frames = await browser_render.render_motion(pages, design.SCENE_SIZE, seconds)
+            except browser_render.RenderUnavailable as e:
+                log.warning("сцены видео без анимации: %s", e)
+        return await self._build(voice, scenes, lambda path: build_video(scenes, brand, path, frames=frames))
 
     async def _toon(self, data: dict, brand, voice: _Voice | None = None) -> str:
         from .toon import build_toon, normalize_script

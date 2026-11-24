@@ -14,6 +14,8 @@ DEFAULTS = {
     # досье само собирается для горячих лидов, у которых есть что разбирать (сайт или компания с карт)
     "dossier_auto": "1",
     "format_post": "1", "format_carousel": "1", "format_reel": "1", "format_ideas": "1",
+    # анимация: слова выезжают по одному на обложке карусели и в сценах видео (рисует браузер)
+    "format_motion": "1",
     "publish_telegram": "1", "publish_instagram": "1", "publish_threads": "1",
     **{key: "0" for key in EXTRA},
     **dict(SOURCE_SETTINGS.values()),

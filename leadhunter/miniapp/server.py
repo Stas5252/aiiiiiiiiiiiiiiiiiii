@@ -26,7 +26,7 @@ STATUSES = ("new", "taken", "contacted", "replied", "deal", "lost", "spam", "hot
 # «Горячий» — пометка неразобранного лида, а не конец работы: он остаётся в открытых
 OPEN_STATUSES = ("new", "hot", "taken", "contacted", "replied")
 FLAGS = ("paused", "autopilot", "leads_boards", "leads_social", "leads_jobs", "leads_maps", "leads_web", "format_post",
-         "format_carousel", "format_reel", "format_toon", "format_aivideo", "format_ideas", "format_magnet",
+         "format_carousel", "format_reel", "format_motion", "format_toon", "format_aivideo", "format_ideas", "format_magnet",
          "publish_telegram", "publish_instagram", "publish_threads", "publish_vk", "publish_youtube", "schedule_enabled",
          "dossier_auto")
 # Что можно создать из кабинета; выключенные в настройках форматы в список не попадают

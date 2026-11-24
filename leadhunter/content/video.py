@@ -35,8 +35,29 @@ async def probe_duration(path: str) -> float:
         return 0.0
 
 
+ANIM_FPS = 25  # кадры анимации сцены приходят из браузера с этой частотой
+
+
+async def build_motion(frames: list[bytes], out_path: str, *, hold: float = 1.5) -> str:
+    """Короткое видео без звука из кадров анимации (обложка карусели): анимация и пауза на последнем кадре."""
+    if not ffmpeg_available():
+        raise RuntimeError("ffmpeg не установлен")
+    if not frames:
+        raise RuntimeError("нет кадров для видео")
+    with tempfile.TemporaryDirectory(prefix="lhmotion_") as tmp:
+        for i, frame in enumerate(frames):
+            with open(os.path.join(tmp, f"{i:04d}.jpg"), "wb") as f:
+                f.write(frame)
+        await _ffmpeg("-framerate", str(ANIM_FPS), "-i", os.path.join(tmp, "%04d.jpg"),
+                      "-vf", f"tpad=stop_mode=clone:stop_duration={hold:.2f},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(FPS), "-movflags", "+faststart", out_path)
+    return out_path
+
+
 async def build_video(scenes: list[dict], brand: Brand, out_path: str, *, music_path: str | None = None,
-                      size=(1080, 1920)) -> str:
+                      size=(1080, 1920), frames: list[list[bytes]] | None = None) -> str:
+    """frames — кадры анимации каждой сцены (из браузера): сцена сначала двигается, потом стоит до конца своей
+    длительности. Без них сцена — один неподвижный кадр, нарисованный Pillow."""
     if not ffmpeg_available():
         raise RuntimeError("ffmpeg не установлен")
     if not scenes:
@@ -44,9 +65,16 @@ async def build_video(scenes: list[dict], brand: Brand, out_path: str, *, music_
     with tempfile.TemporaryDirectory(prefix="lhvideo_") as tmp:
         durations, audio_files, lines = [], [], []
         for i, sc in enumerate(scenes):
-            frame = os.path.join(tmp, f"f{i}.png")
-            with open(frame, "wb") as f:
-                f.write(render_scene(sc.get("text", ""), brand, size, sc.get("subtitle", "")))
+            anim = frames[i] if frames and i < len(frames) else None
+            if not anim:
+                anim = [render_scene(sc.get("text", ""), brand, size, sc.get("subtitle", ""))]
+            ext = "jpg" if anim[0][:3] == b"\xff\xd8\xff" else "png"
+            paths = []
+            for k, data in enumerate(anim):
+                paths.append(os.path.join(tmp, f"f{i}_{k}.{ext}"))
+                with open(paths[-1], "wb") as f:
+                    f.write(data)
+            frame = paths[-1]
             dur = float(sc.get("duration") or 3.0)
             if sc.get("audio"):
                 ap = os.path.join(tmp, f"a{i}.audio")
@@ -54,9 +82,16 @@ async def build_video(scenes: list[dict], brand: Brand, out_path: str, *, music_
                     f.write(sc["audio"])
                 dur = await probe_duration(ap) + PAD
                 audio_files.append(ap)
+            step = 1 / ANIM_FPS
+            # сцена не короче трёх четвертей анимации: к этому моменту все слова уже на экране
+            dur = max(dur, 0.75 * len(paths) * step) if len(paths) > 1 else dur
+            paths = paths[:max(1, int(dur / step))]
+            frame = paths[-1]
             durations.append(dur)
-            lines += [f"file '{frame}'", f"duration {dur:.3f}"]
-        lines.append(f"file '{os.path.join(tmp, f'f{len(scenes) - 1}.png')}'")  # concat demuxer теряет последнюю длительность
+            for path in paths[:-1]:
+                lines += [f"file '{path}'", f"duration {step:.3f}"]
+            lines += [f"file '{frame}'", f"duration {dur - step * (len(paths) - 1):.3f}"]
+        lines.append(f"file '{frame}'")  # concat demuxer теряет последнюю длительность
         lst = os.path.join(tmp, "list.txt")
         with open(lst, "w") as f:
             f.write("\n".join(lines))

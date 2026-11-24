@@ -21,3 +21,21 @@ def no_settings_from_shell(monkeypatch):
     for name in Settings.model_fields:
         monkeypatch.delenv(name.upper(), raising=False)
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_slide_browser(request, monkeypatch):
+    """Слайды в тестах рисует Pillow: браузер запускается только в тестах с меткой slide_browser."""
+    if request.node.get_closest_marker("slide_browser"):
+        return
+    from leadhunter.content import browser_render, shots
+
+    async def unavailable(*a, **kw):
+        raise browser_render.RenderUnavailable("в тестах браузер выключен")
+
+    async def no_shot(*a, **kw):
+        return None
+
+    monkeypatch.setattr(browser_render, "render_pages", unavailable)
+    monkeypatch.setattr(browser_render, "render_motion", unavailable)
+    monkeypatch.setattr(shots, "site_shot", no_shot)

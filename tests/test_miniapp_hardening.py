@@ -322,7 +322,7 @@ async def test_v13_landing_css_ignores_broken_brand_color(w):
     slug = await w.magnet()
     await w.db.set_setting("brand", json.dumps({"primary": "red;}body{display:none}", "accent": "#zzzzzz"}))
     page = await (await w.client.get(f"/lp/{slug}")).text()
-    assert "display:none" not in page and "zzzzzz" not in page and "--bg:#14141F;--ac:#7C5CFF" in page
+    assert "display:none" not in page and "zzzzzz" not in page and "--bg:#050505;--ac:#FFFFFF" in page and "--on:#000" in page
 
 
 # ---------- V3: права ----------

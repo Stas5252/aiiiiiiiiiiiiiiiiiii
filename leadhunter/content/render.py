@@ -1,5 +1,6 @@
 """Рендер слайдов, обложек и кадров для видео на Pillow — без сети."""
 import io
+import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -11,6 +12,14 @@ _DIRS = ("/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/dejavu", "/usr/sh
          "/Library/Fonts", "/System/Library/Fonts/Supplemental", "C:/Windows/Fonts")
 _NAMES = {False: ("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf", "Arial.ttf", "arial.ttf"),
           True: ("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf")}
+
+
+MARK = re.compile(r"\*([^*\n]{1,60})\*")
+
+
+def plain(text) -> str:
+    """Текст без разметки акцента: *слово* → слово. Акцент рисуется только на слайдах из браузера."""
+    return MARK.sub(r"\1", str(text or ""))
 
 
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -25,9 +34,11 @@ def valid_color(c) -> bool:
 class Brand:
     name: str = ""
     handle: str = ""
-    primary: str = "#14141F"
-    accent: str = "#7C5CFF"
+    # цвета по умолчанию — чёрный стиль слайдов: чёрный фон, белый текст, белый контур акцентов
+    primary: str = "#050505"
+    accent: str = "#FFFFFF"
     text: str = "#FFFFFF"
+    site: str = ""  # адрес сайта в углу последнего слайда
 
     def __post_init__(self):
         # неверный цвет (из старой настройки или кабинета) не должен ронять рендер — берём цвет по умолчанию
@@ -36,11 +47,19 @@ class Brand:
             setattr(self, key, value.strip() if valid_color(value) else type(self).__dataclass_fields__[key].default)
         self.name = str(self.name or "")
         self.handle = str(self.handle or "")
+        self.site = str(self.site or "")
+
+
+_OWN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+# свои шрифты (как на слайдах из браузера): заголовки — Unbounded, текст — Manrope; оба с кириллицей
+_OWN_FONTS = {True: ("Unbounded.ttf", 800), False: ("Manrope.ttf", 500)}
 
 
 @lru_cache(maxsize=None)
 def find_font(bold: bool = False) -> str | None:
-    import os
+    own = os.path.join(_OWN, _OWN_FONTS[bold][0])
+    if os.path.isfile(own):
+        return own
     for name in _NAMES[bold]:
         for d in _DIRS:
             p = os.path.join(d, name)
@@ -54,7 +73,13 @@ def load_font(size: int, bold: bool = False):
     path = find_font(bold)
     if path:
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
+            if os.path.dirname(path) == _OWN:
+                try:
+                    font.set_variation_by_axes([_OWN_FONTS[bold][1]])  # шрифт с переменной толщиной
+                except (OSError, AttributeError):
+                    pass
+            return font
         except OSError:
             pass
     return ImageFont.load_default(size)
@@ -184,7 +209,7 @@ def _png(img: Image.Image) -> bytes:
 
 
 def render_slide(title: str, body: str, index: int, total: int, brand: Brand, size=(1080, 1350)) -> bytes:
-    title, body = printable(title, True), printable(body)
+    title, body = printable(plain(title), True), printable(plain(body))
     img, d, m = _canvas(brand, size)
     w, h = size
     cover = index == 1
@@ -236,7 +261,7 @@ def render_cover(title: str, subtitle: str, brand: Brand, size=COVER_SIZE) -> by
 
 
 def render_scene(text: str, brand: Brand, size=(1080, 1920), subtitle: str = "") -> bytes:
-    text, subtitle = printable(text, True), printable(subtitle)
+    text, subtitle = printable(plain(text), True), printable(plain(subtitle))
     img, d, m = _canvas(brand, size)
     w, h = size
     max_w = w - 2 * m
