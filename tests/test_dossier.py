@@ -259,6 +259,8 @@ async def test_local_address_from_lead_text_is_never_requested(monkeypatch):
     ("Доработать shop.example.ru", "shop.example.ru"),
     ("Магазин на my.shop.example.ru, CMS своя", "my.shop.example.ru"),
     ("Почта anna.petrova@mail.firma.ru", ""),
+    ("Сайт сейчас на shop.brand.ru.com, нужен переезд", ""),  # зона не из списка — лучше не найти, чем обрезать адрес
+    ("Сайт romashka.ru.", "romashka.ru"),
 ])
 def test_client_site_is_taken_from_order_text(text, site):
     assert site_from_text(text) == site

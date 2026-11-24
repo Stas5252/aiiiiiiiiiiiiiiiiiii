@@ -31,7 +31,7 @@ NOT_CLIENT_SITE = (
     "freelance.ru", "weblancer.net", "hh.ru", "wa.me", "whatsapp.com", "mail.ru", "ok.ru", "dzen.ru", "tilda.cc",
     "wordpress.org", "wordpress.com", "apple.com", "rutube.ru", "avito.ru", "habr.com", "trello.com", "loom.com",
 )
-_URL = re.compile(r"https?://[^\s<>\"')\]]+|(?<![\w@./-])(?:[a-zа-яё0-9][a-zа-яё0-9-]*\.)+(?:ru|рф|su|by|kz)(?![\w-])",
+_URL = re.compile(r"https?://[^\s<>\"')\]]+|(?<![\w@./-])(?:[a-zа-яё0-9][a-zа-яё0-9-]*\.)+(?:ru|рф|su|by|kz)(?![\w-]|\.[\w-])",
                   re.I)
 
 SYSTEM = """Ты — помощник исполнителя (фрилансера или студии) по продажам. Бриф исполнителя:
