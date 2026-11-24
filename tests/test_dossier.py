@@ -257,6 +257,13 @@ async def test_sitemap_from_robots_saves_a_request():
     assert r["ok"] and r["robots"] and r["sitemap"] and r["problems"] == [] and len(web.asked) == 2
 
 
+@pytest.mark.parametrize("line", ["Sitemap", "Sitemap:", "# Sitemap: https://kabluk.ru/sitemap.xml"])
+async def test_sitemap_line_without_address_is_not_a_sitemap(line):
+    web = FakeWeb({"https://kabluk.ru/robots.txt": f"User-agent: *\nDisallow: /admin/\n{line}\n", "https://kabluk.ru": GOOD})
+    r = await analyze_site("https://kabluk.ru", get=web, now=NOW)
+    assert not r["sitemap"] and r["problems"] == ["нет карты сайта (sitemap.xml)"] and "https://kabluk.ru/sitemap.xml" in web.asked
+
+
 async def test_missing_robots_and_sitemap_are_problems():
     r = await analyze_site("https://kabluk.ru", get=FakeWeb({"https://kabluk.ru": GOOD}), now=NOW)
     assert r["problems"] == ["нет robots.txt", "нет карты сайта (sitemap.xml)"]

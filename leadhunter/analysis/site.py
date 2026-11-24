@@ -222,7 +222,8 @@ async def analyze_site(url: str, *, get=fetch, now: datetime | None = None) -> d
         report["problems"] = [report["error"] if report["error"].startswith("сайт") else "сайт " + report["error"]]
         return report
     report.update(parse_page(page, now=now), ok=True, url=page.url)
-    sitemap = has_robots and any(line.partition(":")[0].strip().lower() == "sitemap" for line in robots.body.splitlines())
+    sitemap = has_robots and any(key.strip().lower() == "sitemap" and value.strip()
+                                 for key, _, value in (line.partition(":") for line in robots.body.splitlines()))
     if not sitemap:
         sm = await get(urljoin(root, "sitemap.xml"))
         sitemap = sm.ok and sm.status == 200 and bool(re.search(r"<(?:urlset|sitemapindex)\b", sm.body[:5000], re.I))
