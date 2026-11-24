@@ -1,4 +1,5 @@
 """Карты на всю Россию: справочники не считаются сайтом компании, города и рубрики обходятся по частям."""
+import asyncio
 import json
 import time
 
@@ -234,6 +235,18 @@ async def test_failed_poll_does_not_move_on(db, audited):
     src.fetcher = FakeFetcher([org(5, "Без сайта")])
     await src.poll()
     assert src.fetcher.asked[0] == "стилист Москва"
+
+
+async def test_bot_stopped_during_site_audit_repeats_the_same_requests(db, monkeypatch):
+    """Было: место обхода сохранялось до проверки сайтов — остановка бота в этот момент теряла лиды прохода на весь круг."""
+    async def stopped(site, timeout=15):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(yandex_maps_web, "audit_site", stopped)
+    src = source([org(4, "Глянец", ["https://glyanec.ru"])], ["Россия"], ["стилист"], per_poll=2, db=db)
+    with pytest.raises(asyncio.CancelledError):
+        await src.poll()
+    assert await db.get_setting("maps_cursor", "0") == "0"
 
 
 async def test_cabinet_lists_override_env_and_empty_returns_to_env(db):

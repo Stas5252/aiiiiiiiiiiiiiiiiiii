@@ -105,8 +105,6 @@ class YandexMapsWebSource(Source):
                 else:
                     leads.append(business_lead(item, q, city, foreign))
             to_audit.append(with_site)
-        # Проход отработал целиком — следующий начнётся с новых городов. После сбоя те же пары повторятся.
-        await self.plan.commit(cursor)
         # Лимит проверок сайтов делится между запросами прохода поровну, а не достаётся первому городу
         queue = [t for group in zip_longest(*to_audit) for t in group if t][: self.audit_per_poll]
         if self.audit and queue:
@@ -119,4 +117,6 @@ class YandexMapsWebSource(Source):
 
             results = await asyncio.gather(*(check(*t) for t in queue), return_exceptions=True)
             leads += [x for x in results if isinstance(x, Lead)]
+        # Место обхода сдвигаем последним делом: после сбоя или остановки бота посреди прохода те же пары повторятся
+        await self.plan.commit(cursor)
         return leads
