@@ -1,7 +1,10 @@
 """HTTP-сервер Mini App: статика + JSON API. Авторизация — подпись initData от Telegram."""
+import asyncio
+import html
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
@@ -10,15 +13,58 @@ from ..db import Database
 from ..filters import parse_rule
 from ..models import Lead
 from .auth import validate_init_data
-from .landing import render_landing, render_thanks
+from .landing import render_landing, render_notice, render_thanks
+from .landing_guard import MERGE_WINDOW, LandingGuard, client_ip, contact_key
+from .validation import (bad, json_object, path_id, query_int, safe_url, to_bool, to_color, to_dict, to_float, to_int,
+                         to_str, to_str_list)
 
 log = logging.getLogger(__name__)
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 STATUSES = ("new", "taken", "contacted", "replied", "deal", "lost", "spam", "hot")
+# «Горячий» — пометка неразобранного лида, а не конец работы: он остаётся в открытых
+OPEN_STATUSES = ("new", "hot", "taken", "contacted", "replied")
+FLAGS = ("paused", "autopilot", "leads_boards", "leads_social", "leads_jobs", "leads_maps", "leads_web", "format_post",
+         "format_carousel", "format_reel", "format_toon", "format_aivideo", "format_ideas", "format_magnet",
+         "publish_telegram", "publish_instagram", "publish_threads", "publish_vk", "publish_youtube", "schedule_enabled")
+# Как и в боте: состав команды, каналы публикации и пауза — решения владельца
+OWNER_ONLY = ("team_remove", "channels", "paused")
+DEV_HOSTS = ("localhost", "127.0.0.1", "::1")
+NO_AI = ("ИИ не подключён. Подключите его в Настройках → Подключения или командой /setup в боте. "
+         "Без ИИ можно собрать карусель или видео вручную: «Заголовок | слайд 1 | слайд 2».")
+
+APP_CSP = ("default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; "
+           "img-src 'self' data: blob: https:; media-src 'self' https:; connect-src 'self'; object-src 'none'; "
+           "base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://*.telegram.org")
+LANDING_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; "
+               "base-uri 'none'; frame-ancestors 'none'")
+API_CSP = "default-src 'none'; frame-ancestors 'none'"
+_TG_LINK = re.compile(r"(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{3,31})/?")
+_TG_TARGET = re.compile(r"@[A-Za-z][A-Za-z0-9_]{3,31}|-?\d{5,20}")
+_SECRET_IN_TEXT = re.compile(r"(?i)\b(key|token|access_token|secret|password)=[^&\s'\"]+")
 
 
 def _row(r) -> dict:
     return dict(r) if r is not None else None
+
+
+def _lead_row(r) -> dict:
+    d = dict(r)
+    d["url"] = safe_url(d.get("url"))
+    return d
+
+
+def _manual_content(kind: str, topic: str) -> tuple[str, dict] | None:
+    """Без ИИ, как в боте: «Заголовок | слайд 1 | слайд 2» для карусели и «фраза 1 | фраза 2» для видео."""
+    parts = [p.strip() for p in topic.split("|") if p.strip()]
+    if len(parts) < 2:
+        return None
+    if kind == "carousel":
+        return parts[0], {"title": parts[0], "caption": parts[0], "hashtags": [],
+                          "slides": [{"title": parts[0], "text": ""}] + [{"title": "", "text": p} for p in parts[1:]]}
+    if kind == "reel":
+        return parts[0], {"title": parts[0], "caption": parts[0], "hashtags": [],
+                          "scenes": [{"text": p, "voice": "", "duration": 3} for p in parts]}
+    return None
 
 
 class MiniAppAPI:
@@ -29,18 +75,26 @@ class MiniAppAPI:
         self.deps = deps
         self.sources = sources
         self.dev_user_id = dev_user_id
+        self.landing_guard = LandingGuard(bot_token)
+        self._landing_lock = asyncio.Lock()
 
     # --- auth ---
     async def user(self, request: web.Request) -> dict:
-        init_data = request.headers.get("X-Init-Data") or request.query.get("initData", "")
+        # Только заголовок: адрес с ?initData= оседал бы в логах доступа и истории браузера
+        init_data = request.headers.get("X-Init-Data", "")
         user = validate_init_data(init_data, self.bot_token) if init_data else None
         if user is None and self.dev_user_id and not init_data:
+            # Режим разработки без подписи — только при обращении по локальному имени (защита от DNS rebinding)
+            if request.url.host not in DEV_HOSTS:
+                raise web.HTTPForbidden(text="режим разработки доступен только с localhost")
             user = {"id": self.dev_user_id, "first_name": "dev"}
-        if not user or "id" not in user:
+        if not isinstance(user, dict) or isinstance(user.get("id"), bool) or not isinstance(user.get("id"), int):
             raise web.HTTPUnauthorized(text="bad initData")
         uid = int(user["id"])
-        if not (await self.guard.is_owner(uid) or await self.db.is_member(uid)):
-            raise web.HTTPForbidden(text="not a team member")
+        # Доступ решает Guard бота: владелец или участник, который всё ещё состоит в рабочей группе
+        if not await self.guard.allowed_id(uid):
+            raise web.HTTPForbidden(text="Нет доступа: вы не в команде. Нажмите любую кнопку бота в рабочей группе "
+                                         "или попросите владельца.")
         user["is_owner"] = await self.guard.is_owner(uid)
         return user
 
@@ -54,14 +108,15 @@ class MiniAppAPI:
         return web.json_response({"user": user, "sources": [s.status_line() for s in self.sources]})
 
     async def leads(self, request):
-        await self.user(request)
+        user = await self.user(request)
         q = request.query
         where, params = ["1=1"], []
         if q.get("status"):
-            if q["status"] == "open":
-                where.append("status IN ('new','taken','contacted','replied')")
-            else:
-                where.append("status = ?"); params.append(q["status"])
+            # open — все открытые; иначе один статус или несколько через запятую
+            statuses = OPEN_STATUSES if q["status"] == "open" else tuple(x for x in q["status"].split(",") if x)
+            if not statuses or any(x not in STATUSES for x in statuses):
+                raise bad("status: неизвестный статус")
+            where.append(f"status IN ({', '.join('?' * len(statuses))})"); params += statuses
         if q.get("source"):
             where.append("source = ?"); params.append(q["source"])
         if q.get("service"):
@@ -70,59 +125,63 @@ class MiniAppAPI:
             where.append("(text LIKE ? OR title LIKE ? OR author LIKE ?)")
             params += [f"%{q['q']}%"] * 3
         if q.get("mine") and q.get("mine") != "0":
-            user = await self.user(request)
             where.append("assigned_to = ?"); params.append(int(user["id"]))
-        limit = min(int(q.get("limit", 50)), 200)
-        offset = int(q.get("offset", 0))
+        limit = query_int(request, "limit", 50, 1, 200)
+        offset = query_int(request, "offset", 0, 0, 10**9)
         cur = await self.db.conn.execute(
             f"SELECT id, source, score, status, service, urgency, budget, title, text, author, contact, url, summary,"
             f" assigned_name, created_at, chat_title FROM leads WHERE {' AND '.join(where)}"
             f" ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset))
-        rows = [dict(r) for r in await cur.fetchall()]
+        rows = [_lead_row(r) for r in await cur.fetchall()]
         for r in rows:
             r["text"] = (r["text"] or "")[:300]
         return web.json_response({"leads": rows})
 
     async def lead(self, request):
         await self.user(request)
-        row = await self.db.get_lead(int(request.match_info["id"]))
+        row = await self.db.get_lead(path_id(request))
         if not row:
             raise web.HTTPNotFound()
         cur = await self.db.conn.execute("SELECT status, user_name, at FROM lead_events WHERE lead_id = ? ORDER BY id",
                                          (row["id"],))
         events = [dict(r) for r in await cur.fetchall()]
-        data = dict(row)
+        data = _lead_row(row)
         if not data.get("draft") and data.get("service"):
             data["draft"] = await self.db.get_template(data["service"]) or ""
         return web.json_response({"lead": data, "events": events})
 
     async def set_status(self, request):
         user = await self.user(request)
-        lead_id = int(request.match_info["id"])
-        body = await request.json()
+        lead_id = path_id(request)
+        body = await json_object(request)
         status = body.get("status")
-        if status not in STATUSES:
-            raise web.HTTPBadRequest(text="bad status")
+        if not isinstance(status, str) or status not in STATUSES:
+            raise bad("bad status")
         row = await self.db.get_lead(lead_id)
         if not row:
             raise web.HTTPNotFound()
         name = self._name(user)
+        if status == "hot" and row["status"] not in ("new", "hot"):
+            raise web.HTTPConflict(text="лид уже в работе — «горячим» помечают только новый")
         if status in ("taken", "contacted", "replied", "deal", "lost") and not row["assigned_to"]:
             await self.db.assign(lead_id, int(user["id"]), name)
         if status == "taken":
             if not await self.db.assign(lead_id, int(user["id"]), name):
                 raise web.HTTPConflict(text=f"уже взял {row['assigned_name']}")
+            # «Вернуть в работу» свой закрытый лид: он уже закреплён, assign статус не трогает
+            if (await self.db.get_lead(lead_id))["status"] != "taken":
+                await self.db.set_status(lead_id, "taken", int(user["id"]), name)
         else:
             await self.db.set_status(lead_id, status, int(user["id"]), name)
         if status == "contacted":
             await self.db.schedule_followup(lead_id, self.deps.followup_hours)
         elif status != "hot":
             await self.db.clear_followup(lead_id)
-        return web.json_response({"lead": _row(await self.db.get_lead(lead_id))})
+        return web.json_response({"lead": _lead_row(await self.db.get_lead(lead_id))})
 
     async def stats(self, request):
         await self.user(request)
-        days = int(request.query.get("days", 30))
+        days = query_int(request, "days", 30, 1, 365)
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cur = await self.db.conn.execute(
             "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n, SUM(status='deal') AS deals FROM leads"
@@ -147,7 +206,7 @@ class MiniAppAPI:
         })
 
     async def settings_get(self, request):
-        await self.user(request)
+        user = await self.user(request)
         kw = await self.db.get_keywords()
         from ..freshness import Freshness
         from ..niches import NICHES
@@ -196,61 +255,74 @@ class MiniAppAPI:
             "autopilot": (await self.db.get_setting("autopilot")) == "1",
             "pillars": await self.db.get_setting("pillars", ""),
             "channels": channels,
-            "integrations": await integ.status() if integ else [],
+            # ключи и прокси (пусть и под маской) — только владельцу
+            "integrations": await integ.status() if integ and user["is_owner"] else [],
             "summary": integ.summary() if integ else {},
             "miniapp_url": self.deps.extra.get("miniapp_url"),
         })
 
     async def settings_set(self, request):
+        """Сначала проверяем весь запрос, потом применяем: ошибка в одном поле не оставляет настройки наполовину изменёнными."""
         user = await self.user(request)
-        body = await request.json()
+        body = await json_object(request)
         factory = self.deps.extra.get("factory")
+        db = self.db
+        ops = []  # отложенные записи: (функция, аргументы)
         for key, value in body.items():
+            if key in OWNER_ONLY and not user["is_owner"]:
+                raise web.HTTPForbidden(text="это может только владелец")
             if key == "threshold":
-                await self.db.set_setting("threshold", str(max(0, min(10, int(value)))))
+                ops.append((db.set_setting, ("threshold", str(to_int(value, key, 0, 10)))))
             elif key in ("profile", "geo", "voice", "pillars"):
-                await self.db.set_setting(key, str(value).strip())
-            elif key in ('paused', 'autopilot', 'leads_boards', 'leads_social', 'leads_jobs', 'leads_maps', 'leads_web', 'format_post', 'format_carousel', 'format_reel', 'format_toon', 'format_aivideo', 'format_ideas', 'format_magnet', 'publish_telegram', 'publish_instagram', 'publish_threads', 'publish_vk', 'publish_youtube', 'schedule_enabled'):
-                await self.db.set_setting(key, "1" if value else "0")
+                ops.append((db.set_setting, (key, to_str(value, key))))
+            elif key in FLAGS:
+                ops.append((db.set_setting, (key, "1" if to_bool(value, key) else "0")))
             elif key == "phrases":
-                await self.deps.phrases.set(list(value))
+                ops.append((self.deps.phrases.set, (to_str_list(value, key),)))
             elif key == "templates":
-                for service, text in dict(value).items():
-                    await self.db.set_template(service, text)
+                for service, text in to_dict(value, key).items():
+                    ops.append((db.set_template, (to_str(service, key, 50), to_str(text, key, 4000))))
             elif key == "niche":
                 from ..niches import NICHES, apply
-                if value not in NICHES:
-                    raise web.HTTPBadRequest(text="unknown niche")
-                await apply(self.db, self.deps.phrases, NICHES[value])
+                if not isinstance(value, str) or value not in NICHES:
+                    raise bad("unknown niche")
+                ops.append((apply, (db, self.deps.phrases, NICHES[value])))
             elif key == "fresh":
-                v = dict(value)
+                v = to_dict(value, key)
                 if "board_max_age_hours" in v:
-                    await self.db.set_setting("board_max_age_hours", str(max(0.1, min(72.0, float(v["board_max_age_hours"])))))
+                    hours = to_float(v["board_max_age_hours"], "board_max_age_hours", 0.1, 72.0)
+                    ops.append((db.set_setting, ("board_max_age_hours", str(hours))))
                 if "max_competitors" in v:
-                    await self.db.set_setting("max_competitors", str(max(0, min(500, int(v["max_competitors"])))))
+                    ops.append((db.set_setting, ("max_competitors", str(to_int(v["max_competitors"], "max_competitors", 0, 500)))))
             elif key == "brand":
-                v = {k: str(dict(value).get(k, "")).strip() for k in ("name", "handle", "primary", "accent")}
-                for c in ("primary", "accent"):
-                    if v[c] and not (v[c].startswith("#") and len(v[c]) in (4, 7)):
-                        raise web.HTTPBadRequest(text=f"{c}: цвет в формате #RRGGBB")
-                await self.db.set_setting("brand", json.dumps({k: x for k, x in v.items() if x}, ensure_ascii=False))
+                raw = to_dict(value, key)
+                v = {k: to_str(raw.get(k, ""), k, 100) for k in ("name", "handle")}
+                v.update({k: to_color(raw.get(k, ""), k) for k in ("primary", "accent")})
+                ops.append((db.set_setting, ("brand", json.dumps({k: x for k, x in v.items() if x}, ensure_ascii=False))))
             elif key == "channels":
                 if not factory:
-                    raise web.HTTPBadRequest(text="контент-фабрика выключена")
-                for platform, target in dict(value).items():
+                    raise bad("контент-фабрика выключена")
+                for platform, target in to_dict(value, key).items():
                     if platform not in ("telegram", "vk"):
-                        raise web.HTTPBadRequest(text="канал задаётся только для telegram и vk")
-                    target = str(target or "").strip()
+                        raise bad("канал задаётся только для telegram и vk")
+                    target = "" if target is None else to_str(target, platform, 100)
+                    if platform == "telegram":
+                        m = _TG_LINK.fullmatch(target)
+                        target = "@" + m.group(1) if m else target
                     if not target:
-                        await factory.store.remove_channel(platform)
-                    elif platform == "vk" and not target.lstrip("-").isdigit():
-                        raise web.HTTPBadRequest(text="VK: числовой id, для группы со знаком минус")
+                        ops.append((factory.store.remove_channel, (platform,)))
+                    elif platform == "vk" and not re.fullmatch(r"-?\d{1,20}", target):
+                        raise bad("VK: числовой id, для группы со знаком минус")
+                    elif platform == "telegram" and not _TG_TARGET.fullmatch(target):
+                        raise bad("Telegram-канал: @имя канала или его числовой id")
                     else:
-                        await factory.store.set_channel(platform, target)
+                        ops.append((factory.store.set_channel, (platform, target)))
             elif key == "team_remove":
-                await self.db.remove_member(int(value))
+                ops.append((db.remove_member, (to_int(value, key),)))
             else:
-                raise web.HTTPBadRequest(text=f"unknown setting {key}")
+                raise bad(f"unknown setting {key}")
+        for fn, args in ops:
+            await fn(*args)
         log.info("settings changed by %s: %s", user["id"], list(body))
         return await self.settings_get(request)
 
@@ -262,37 +334,51 @@ class MiniAppAPI:
         integ = self.deps.extra.get("integrations")
         if not integ:
             raise web.HTTPServiceUnavailable(text="недоступно")
-        body = await request.json()
+        body = await json_object(request)
         key, value = body.get("key"), body.get("value")
-        if value in (None, ""):
+        from ..integrations import INTEGRATIONS
+        if not isinstance(key, str) or key not in INTEGRATIONS:
+            raise bad("неизвестное подключение")
+        if value is not None and not isinstance(value, str):
+            raise bad("value: нужна строка")
+        if not (value or "").strip():
             await integ.unset(key)
         else:
-            err = await integ.set(key, str(value))
+            err = await integ.set(key, value)
             if err:
-                raise web.HTTPBadRequest(text=err)
+                raise bad(err)
         return web.json_response({"integrations": await integ.status(), "summary": integ.summary()})
 
     async def rule_add(self, request):
         await self.user(request)
-        expr = (await request.json()).get("expr", "")
+        expr = to_str((await json_object(request)).get("expr", ""), "expr", 500)
         try:
             parse_rule(expr)
         except ValueError as e:
-            raise web.HTTPBadRequest(text=str(e))
+            raise bad(str(e))
         await self.db.add_rule(expr)
         return web.json_response({"rules": [dict(r) for r in await self.db.rules()]})
 
     async def rule_del(self, request):
         await self.user(request)
-        await self.db.remove_rule(int(request.match_info["id"]))
+        await self.db.remove_rule(path_id(request))
         return web.json_response({"rules": [dict(r) for r in await self.db.rules()]})
 
     async def keyword_add(self, request):
         await self.user(request)
-        body = await request.json()
-        if body.get("kind") not in ("topic", "intent", "negative") or not body.get("word"):
-            raise web.HTTPBadRequest(text="kind/word")
-        await self.db.add_keyword(body["kind"], body["word"], body.get("category"))
+        body = await json_object(request)
+        kind = body.get("kind")
+        if kind not in ("topic", "intent", "negative"):
+            raise bad("kind: topic, intent или negative")
+        # Пустое слово совпадает с любым текстом и ломает оценку всех лидов
+        word = to_str(body.get("word"), "word", 100)
+        if not word:
+            raise bad("word: напишите слово")
+        category = body.get("category")
+        if kind == "topic":
+            category = to_str(category, "category", 50) if category is not None else ""
+            category = category or "другое"
+        await self.db.add_keyword(kind, word, category if kind == "topic" else None)
         return await self.settings_get(request)
 
     async def keyword_del(self, request):
@@ -325,49 +411,63 @@ class MiniAppAPI:
         store = self.factory.media
         d["images"] = [store.url(n) or f"/media/{n}" for n in media.get("images") or []]
         d["video"] = (store.url(media["video"]) or f"/media/{media['video']}") if media.get("video") else None
-        d["text"] = compose_text(r)
+        # compose_text отдаёт HTML для Telegram; кабинету нужен обычный текст — экранирует он сам, один раз
+        d["text"] = html.unescape(re.sub(r"<[^>]+>", "", compose_text(r)))
         d["published"] = json.loads(r["published"] or "[]")
         return d
 
     async def content_list(self, request):
         await self.user(request)
         q = request.query
-        rows = await self.factory.store.recent(min(int(q.get("limit", 50)), 200), status=q.get("status") or None,
-                                               kind=q.get("kind") or None)
-        return web.json_response({"items": [self._content_row(r) for r in rows if r["kind"] != "idea" or q.get("kind") == "idea"]})
+        status = q.get("status") or None
+        rows = await self.factory.store.recent(query_int(request, "limit", 50, 1, 200), status=status, kind=q.get("kind") or None)
+        # удалённое показываем, только если о нём спросили прямо
+        return web.json_response({"items": [self._content_row(r) for r in rows
+                                            if (r["kind"] != "idea" or q.get("kind") == "idea")
+                                            and (r["status"] != "rejected" or status == "rejected")]})
 
     async def content_item(self, request):
         await self.user(request)
-        row = await self.factory.store.get(int(request.match_info["id"]))
+        row = await self.factory.store.get(path_id(request))
         if not row:
             raise web.HTTPNotFound()
         return web.json_response({"item": self._content_row(row)})
 
     async def content_generate(self, request):
         user = await self.user(request)
-        body = await request.json()
-        kind, topic = body.get("kind", "post"), (body.get("topic") or "").strip()
+        body = await json_object(request)
+        kind, topic = body.get("kind", "post"), to_str(body.get("topic") or "", "topic", 2000)
         if kind not in ("post", "carousel", "reel", "magnet") or not topic:
-            raise web.HTTPBadRequest(text="нужны kind и topic")
+            raise bad("нужны kind и topic")
+        factory, data = self.factory, None
+        gen = getattr(factory, "gen", None)
+        if gen is not None and not gen.available:
+            manual = _manual_content(kind, topic)
+            if manual is None:
+                raise bad(NO_AI)
+            topic, data = manual
         try:
-            row = await self.factory.create(kind, topic, created_by=self._name(user))
+            row = await factory.create(kind, topic, created_by=self._name(user), data=data)
         except Exception as e:
-            raise web.HTTPBadRequest(text=str(e)[:300])
+            log.warning("контент %s не создан: %s", kind, _SECRET_IN_TEXT.sub(r"\1=***", str(e)))
+            raise bad(_SECRET_IN_TEXT.sub(r"\1=***", str(e))[:300])
         return web.json_response({"item": self._content_row(row)})
 
     async def content_action(self, request):
         """action: publish | schedule (at: ISO) | draft | reject | edit (body/caption/hashtags)."""
         await self.user(request)
-        item_id = int(request.match_info["id"])
+        item_id = path_id(request)
         row = await self.factory.store.get(item_id)
         if not row:
             raise web.HTTPNotFound()
-        body = await request.json()
+        body = await json_object(request)
         action = body.get("action")
+        if action in ("publish", "schedule") and row["status"] == "rejected":
+            raise bad("материал удалён")
         if action == "publish":
             pubs = await self.deps.extra["publishers"]() if self.deps.extra.get("publishers") else []
             if not pubs:
-                raise web.HTTPBadRequest(text="площадки не настроены")
+                raise bad("площадки не настроены")
             out = await self.factory.publish(row, pubs)
             return web.json_response({"item": self._content_row(await self.factory.store.get(item_id)),
                                       "results": [{"platform": r.platform, "url": r.url} for r in out.results],
@@ -376,7 +476,7 @@ class MiniAppAPI:
             try:
                 at = datetime.fromisoformat(body["at"])
             except (KeyError, ValueError, TypeError):
-                raise web.HTTPBadRequest(text="нужно время at в ISO")
+                raise bad("нужно время at в ISO")
             if at.tzinfo is None:
                 from zoneinfo import ZoneInfo
                 at = at.replace(tzinfo=ZoneInfo(self.deps.tz))
@@ -392,10 +492,11 @@ class MiniAppAPI:
                     await self.factory.store.add_edit(item_id, row["kind"], row[k] or "", body[k])
                     fields[k] = body[k]
             if "hashtags" in body:
-                fields["hashtags"] = body["hashtags"]
+                tags = body["hashtags"]
+                fields["hashtags"] = to_str(tags, "hashtags", 500) if isinstance(tags, str) else to_str_list(tags, "hashtags", 30, 60)
             await self.factory.store.update(item_id, **fields)
         else:
-            raise web.HTTPBadRequest(text="bad action")
+            raise bad("bad action")
         return web.json_response({"item": self._content_row(await self.factory.store.get(item_id))})
 
     async def content_channels(self, request):
@@ -405,31 +506,88 @@ class MiniAppAPI:
 
     # --- публичный лендинг лид-магнита: заявка превращается в горячий лид ---
     async def landing(self, request):
-        row = await self.factory.store.by_slug(request.match_info["slug"])
+        slug = request.match_info["slug"]
+        row = await self.factory.store.by_slug(slug)
         if not row or row["status"] == "rejected":
             raise web.HTTPNotFound(text="страница не найдена")
         from ..content.store import body_json
-        return web.Response(text=render_landing(row, body_json(row), await self.factory.brand()), content_type="text/html")
+        page = render_landing(row, body_json(row), await self.factory.brand(), self.landing_guard.tokens.issue(slug))
+        return web.Response(text=page, content_type="text/html")
 
     async def landing_submit(self, request):
-        slug = request.match_info["slug"]
+        from ..content.store import body_json
+        slug, guard, ip = request.match_info["slug"], self.landing_guard, client_ip(request)
+
+        async def too_many(limiter, key):
+            wait = limiter.retry_after(key)
+            page = render_notice("Слишком много заявок", "Попробуйте ещё раз через несколько минут.", await self.factory.brand())
+            return web.Response(text=page, status=429, content_type="text/html", headers={"Retry-After": str(wait)})
+
+        if not guard.attempts.take(ip):
+            return await too_many(guard.attempts, ip)
         row = await self.factory.store.by_slug(slug)
-        if not row:
-            raise web.HTTPNotFound()
+        if not row or row["status"] == "rejected":
+            raise web.HTTPNotFound(text="страница не найдена")
         form = await request.post()
-        name = str(form.get("name", "")).strip()[:100]
-        contact = str(form.get("contact", "")).strip()[:100]
-        message = str(form.get("message", "")).strip()[:1000]
-        if not contact or str(form.get("website", "")):  # website — скрытое поле-ловушка для ботов
-            raise web.HTTPBadRequest(text="укажите контакт")
-        n = await self.factory.store.add_landing_lead(slug, name, contact, message, None)
+        brand = await self.factory.brand()
+        values = {"name": str(form.get("name", "")).strip()[:100], "contact": str(form.get("contact", "")).strip()[:100],
+                  "message": str(form.get("message", "")).strip()[:1000]}
+        name, contact, message = values["name"], values["contact"], values["message"]
+        token = str(form.get("token", ""))
+
+        def again(error: str):
+            """Вернуть форму с введённым текстом и новым токеном — человеку не нужно набирать заново."""
+            page = render_landing(row, body_json(row), brand, guard.tokens.issue(slug), values, error)
+            return web.Response(text=page, status=400, content_type="text/html")
+
+        if str(form.get("website", "")):  # website — скрытое поле-ловушка для ботов
+            raise bad("укажите контакт")
+        if len(contact) < 3:
+            return again("Укажите телефон или Telegram — иначе мы не сможем ответить.")
+        # От проверки токена до его погашения нет ни одного await: параллельные запросы не проскочат
+        if not guard.tokens.valid(slug, token):
+            return again("Страница устарела. Проверьте данные и нажмите «Получить» ещё раз.")
+        if not guard.per_ip.take(ip):
+            return await too_many(guard.per_ip, ip)
+        if not guard.per_slug.take(slug):
+            return await too_many(guard.per_slug, slug)
+        guard.tokens.consume(token)
+
+        store = self.factory.store
+        thanks = web.Response(text=render_thanks(row, brand), content_type="text/html")
+        async with self._landing_lock:
+            since = (datetime.now(timezone.utc) - timedelta(seconds=MERGE_WINDOW)).isoformat()
+            cur = await store.conn.execute("SELECT contact, message FROM landing_leads WHERE slug = ? AND at >= ?", (slug, since))
+            same = [r for r in await cur.fetchall() if contact_key(r["contact"] or "") == contact_key(contact)]
+            if same:
+                # Тот же человек на той же странице: второго лида и уведомления не будет, новый текст сохраняем
+                if message and all((r["message"] or "") != message for r in same):
+                    await store.add_landing_lead(slug, name, contact, message, None)
+                return thanks
+            n = await store.add_landing_lead(slug, name, contact, message, None)
         pipeline = self.deps.extra.get("pipeline")
         if pipeline:
-            text = (f"Заявка с лендинга «{row['title'] or row['topic']}»" + (f": {message}" if message else "")
-                    + f"\nИмя: {name or '—'}. Хочет получить материал и консультацию.")
-            await pipeline.handle(Lead(source="landing", external_id=f"{slug}:{n}", text=text, title=row["title"] or "",
-                                       author=name, contact=contact, preset_score=9))
-        return web.Response(text=render_thanks(row, await self.factory.brand()), content_type="text/html")
+            title = row["title"] or row["topic"]
+            text = (f"Заявка с лендинга «{title}»" + (f": {message}" if message else "")
+                    + f"\nИмя: {name or '—'}. Контакт: {contact}. Хочет получить материал и консультацию.")
+            created = False
+            try:
+                created = await pipeline.handle(Lead(source="landing", external_id=f"{slug}:{n}", text=text,
+                                                     title=row["title"] or "", author=name, contact=contact, preset_score=9))
+            except Exception:
+                log.exception("заявка с лендинга %s (№%s) не дошла до лидов", slug, n)
+            if not created:
+                log.warning("заявка с лендинга %s (№%s) не стала лидом; она есть в кабинете: Контент → Заявки со страниц", slug, n)
+        return thanks
+
+    async def landing_leads(self, request):
+        """Все заявки со страниц лид-магнитов — даже те, что не стали лидами."""
+        await self.user(request)
+        cur = await self.factory.store.conn.execute(
+            "SELECT l.id, l.slug, l.name, l.contact, l.message, l.at, COALESCE(NULLIF(c.title, ''), c.topic, '') AS page"
+            " FROM landing_leads l LEFT JOIN content_items c ON c.slug = l.slug ORDER BY l.id DESC LIMIT ?",
+            (query_int(request, "limit", 50, 1, 200),))
+        return web.json_response({"items": [dict(r) for r in await cur.fetchall()]})
 
 
 def build_app(api: MiniAppAPI) -> web.Application:
@@ -457,6 +615,7 @@ def build_app(api: MiniAppAPI) -> web.Application:
     r.add_get("/api/content/channels", api.content_channels)
     r.add_get(r"/api/content/{id:\d+}", api.content_item)
     r.add_post(r"/api/content/{id:\d+}", api.content_action)
+    r.add_get("/api/landing-leads", api.landing_leads)
     r.add_get("/lp/{slug}", api.landing)
     r.add_post("/lp/{slug}", api.landing_submit)
     if api.deps.extra.get("factory"):
@@ -464,13 +623,36 @@ def build_app(api: MiniAppAPI) -> web.Application:
 
     @web.middleware
     async def errors(request, handler):
+        """Ошибки API — всегда JSON с полем error: кабинет показывает его человеку."""
         try:
             return await handler(request)
         except web.HTTPException as e:
             if e.status >= 400 and request.path.startswith("/api/"):
                 return web.json_response({"error": e.text or e.reason}, status=e.status)
             raise
+        except Exception:
+            if not request.path.startswith("/api/"):
+                raise
+            log.exception("ошибка API %s %s", request.method, request.path)
+            return web.json_response({"error": "Что-то сломалось на сервере. Попробуйте ещё раз."}, status=500)
     app.middlewares.append(errors)
+
+    async def security_headers(request, response):
+        path, h = request.path, response.headers
+        h.setdefault("X-Content-Type-Options", "nosniff")
+        h.setdefault("Referrer-Policy", "no-referrer")
+        if path in ("/", "/app", "/app/") or path.startswith("/static/"):
+            # Кабинет открывается внутри Telegram, в том числе во фрейме web.telegram.org:
+            # X-Frame-Options список сайтов не умеет, поэтому здесь работает только frame-ancestors
+            h.setdefault("Content-Security-Policy", APP_CSP)
+            h.setdefault("Cache-Control", "no-cache")
+            return
+        h.setdefault("X-Frame-Options", "DENY")
+        if path.startswith("/lp/"):
+            h.setdefault("Content-Security-Policy", LANDING_CSP)
+        elif not path.startswith("/media/"):
+            h.setdefault("Content-Security-Policy", API_CSP)
+    app.on_response_prepare.append(security_headers)
     return app
 
 

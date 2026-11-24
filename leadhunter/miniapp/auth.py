@@ -5,6 +5,8 @@ import json
 import time
 from urllib.parse import parse_qsl
 
+MAX_CLOCK_SKEW = 60
+
 
 def validate_init_data(init_data: str, bot_token: str, max_age: int = 86400) -> dict | None:
     """Возвращает словарь user при валидной подписи, иначе None."""
@@ -21,11 +23,14 @@ def validate_init_data(init_data: str, bot_token: str, max_age: int = 86400) -> 
     if not hmac.compare_digest(expected, received):
         return None
     try:
-        if max_age and time.time() - int(pairs.get("auth_date", "0")) > max_age:
+        age = time.time() - int(pairs.get("auth_date", "0"))
+        # Дата из будущего (с запасом на расхождение часов) — такой initData Telegram выдать не мог
+        if age < -MAX_CLOCK_SKEW or (max_age and age > max_age):
             return None
-        return json.loads(pairs.get("user", "{}"))
+        user = json.loads(pairs.get("user", "{}"))
     except (ValueError, json.JSONDecodeError):
         return None
+    return user if isinstance(user, dict) else None
 
 
 def sign_init_data(fields: dict, bot_token: str) -> str:

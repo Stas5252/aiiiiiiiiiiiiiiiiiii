@@ -1,5 +1,6 @@
-"""Локальный запуск Mini App без Telegram для разработки: python -m leadhunter.miniapp.dev [user_id]
-Открывает API под указанным пользователем без проверки подписи. Только для локальной отладки."""
+"""Локальный запуск Mini App без Telegram для разработки: python -m leadhunter.miniapp.dev [user_id] [port]
+Открывает API под указанным пользователем без проверки подписи, поэтому слушает только 127.0.0.1.
+База берётся из DB_PATH — для опытов укажите копию: DB_PATH=/tmp/copy.db python -m leadhunter.miniapp.dev"""
 import asyncio
 import logging
 import sys
@@ -14,6 +15,9 @@ from ..content.runtime import build_content, build_llm
 from ..db import Database
 from ..phrases import PhraseProvider, default_phrases
 from .server import MiniAppAPI, build_app
+
+# Без подписи Telegram любой, кто достучится до порта, — владелец. Поэтому только локальный адрес.
+DEV_HOST = "127.0.0.1"
 
 
 async def main(user_id: int, port: int) -> None:
@@ -37,8 +41,8 @@ async def main(user_id: int, port: int) -> None:
     api = MiniAppAPI(db, s.bot_token, guard, deps, [], dev_user_id=user_id)
     runner = web.AppRunner(build_app(api))
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", port).start()
-    print(f"Mini App (dev, user {user_id}): http://localhost:{port}/app")
+    await web.TCPSite(runner, DEV_HOST, port).start()
+    print(f"Mini App (dev, user {user_id}): http://localhost:{port}/app — база {s.db_path}, доступ только с этой машины")
     await asyncio.Event().wait()
 
 

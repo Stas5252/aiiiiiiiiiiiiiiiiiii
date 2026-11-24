@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>LeadHunter</title>
+<link rel="icon" href="data:,">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -102,6 +103,10 @@
       <button data-cstatus="published">Вышло</button>
     </div>
     <div id="content-list" class="list"></div>
+    <div class="card hidden" id="c-landing-card">
+      <div class="card-title">Заявки со страниц <span class="count" id="c-landing-count"></span></div>
+      <div id="c-landing" class="ll-list"></div>
+    </div>
   </section>
 
   <!-- Экран: Настройки (отдельная страница, BackButton) -->
@@ -132,7 +137,7 @@
         <div class="stepper"><button data-step="-1">−</button><span id="s-threshold">5</span><button data-step="1">+</button></div>
       </div>
       <div class="row-setting">
-        <div><div class="label">Пауза уведомлений</div><div class="hint">лиды копятся, но не присылаются</div></div>
+        <div><div class="label">Пауза уведомлений</div><div class="hint" id="s-paused-hint">лиды копятся, но не присылаются</div></div>
         <label class="switch"><input type="checkbox" id="s-paused"><span></span></label>
       </div>
       <div class="row-setting col">
@@ -203,7 +208,7 @@
       </div>
       <div class="row-setting col">
         <div id="s-plat" class="rows"></div>
-        <p class="hint">ключи — в Подключениях ниже</p>
+        <p class="hint" id="s-ch-hint">ключи — в Подключениях ниже</p>
       </div>
     </div>
 
