@@ -820,6 +820,77 @@ async def test_failed_platforms_are_shown_and_resent_only_there(w):
     assert body["results"] == [] and "уже опубликован" in body["errors"][0] and (tg.calls, vk.calls) == (1, 2)
 
 
+async def partly_published(w):
+    """Материал вышел в Telegram, а в VK — нет."""
+    item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
+    tg, vk = Pub("telegram", "Telegram"), Pub("vk", "VK", fail="нет прав на стену")
+    use_pubs(w, tg, vk)
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    assert [e["platform"] for e in (await r.json())["item"]["publish_errors"]] == ["vk"]
+    vk.fail = None
+    return item_id, tg, vk
+
+
+async def resend(w, item_id):
+    r = await w.client.post(f"/api/content/{item_id}", json={"action": "publish"}, headers=auth())
+    assert r.status == 200
+    return await r.json()
+
+
+async def test_resend_keeps_platform_that_is_switched_off(w):
+    """VK выключили на время: «Доотправить» туда не шлёт, но и не забывает, что материал туда не ушёл."""
+    item_id, tg, vk = await partly_published(w)
+    await w.db.set_setting("publish_vk", "0")
+    body = await resend(w, item_id)
+    assert body["results"] == [] and "выключена" in body["errors"][0] and vk.calls == 1
+    assert body["item"]["publish_errors"] == [{"platform": "vk", "label": "VK", "error": "нет прав на стену"}]
+    await w.db.set_setting("publish_vk", "1")
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, vk.calls) == (1, 2)
+    assert body["item"]["publish_errors"] == []
+
+
+async def test_resend_keeps_platform_that_is_disconnected(w):
+    item_id, tg, vk = await partly_published(w)
+    use_pubs(w, tg)  # VK отключили в /channels
+    body = await resend(w, item_id)
+    assert body["results"] == [] and "VK" in body["errors"][0] and "не подключена" in body["errors"][0]
+    assert [e["platform"] for e in body["item"]["publish_errors"]] == ["vk"]
+    use_pubs(w, tg, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and body["item"]["publish_errors"] == []
+
+
+async def test_resend_keeps_failed_platforms_when_material_is_not_ready(w, monkeypatch):
+    item_id, tg, vk = await partly_published(w)
+    monkeypatch.setattr(type(w.factory), "not_ready", lambda self, row: "нет файла картинки")
+    body = await resend(w, item_id)
+    assert body["results"] == [] and body["errors"] == ["нет файла картинки"] and vk.calls == 1
+    assert [e["platform"] for e in body["item"]["publish_errors"]] == ["vk"]
+
+
+async def test_resend_does_not_post_to_newly_connected_platform(w):
+    """«Доотправить» шлёт только туда, куда не ушло, — не на площадку, подключённую позже."""
+    item_id, tg, vk = await partly_published(w)
+    ok_ru = Pub("ok", "Одноклассники")
+    use_pubs(w, tg, ok_ru, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, ok_ru.calls, vk.calls) == (1, 0, 2)
+    assert [p["platform"] for p in body["item"]["published"]] == ["telegram", "vk"] and body["item"]["publish_errors"] == []
+
+
+async def test_resend_after_interruption_goes_to_every_platform_left(w):
+    """Публикацию оборвали на середине (какие площадки остались — не записано): доотправка идёт на все оставшиеся."""
+    from leadhunter.content.store import INTERRUPTED
+    item_id = await published_item(w)
+    await w.factory.store.update(item_id, publish_errors=[INTERRUPTED])
+    tg, vk = Pub("telegram", "Telegram"), Pub("vk", "VK")
+    use_pubs(w, tg, vk)
+    body = await resend(w, item_id)
+    assert [x["platform"] for x in body["results"]] == ["vk"] and (tg.calls, vk.calls) == (0, 1)
+    assert body["item"]["publish_errors"] == []
+
+
 async def test_nothing_published_keeps_draft_and_shows_reasons(w):
     item_id = await w.factory.save("post", "тема", {"title": "Пост", "body": "Текст поста"})
     use_pubs(w, Pub("vk", "VK", fail="нет прав на стену"))
