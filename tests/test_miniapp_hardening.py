@@ -84,7 +84,7 @@ class World:
         return list(await cur.fetchall())
 
 
-async def make_world(tmp_path, dev_user_id=None):
+async def make_world(tmp_path, dev_user_id=None, bot=None):
     db = Database(str(tmp_path / "t.db"))
     await db.connect()
     notifier = FakeNotifier()
@@ -96,7 +96,7 @@ async def make_world(tmp_path, dev_user_id=None):
     notifier.sent.clear()
     await db.add_member(MEMBER, "Маша")
     await db.add_member(MEMBER2, "Петя")
-    guard = Guard(None, db, [OWNER])
+    guard = Guard(bot, db, [OWNER])
     deps = BotDeps(db, [], guard, PhraseProvider(db, ["нужен сайт"]), Workspace(None, db), None, "профиль")
     deps.extra["threshold"] = 5
     deps.extra["pipeline"] = pipeline
@@ -107,6 +107,35 @@ async def make_world(tmp_path, dev_user_id=None):
     client = TestClient(TestServer(build_app(api)))
     await client.start_server()
     return World(db, api, client, factory, notifier, deps)
+
+
+GROUP = -1001234567890
+
+
+class FakeGroupBot:
+    """Вместо Telegram: отвечает, кто сейчас состоит в рабочей группе."""
+
+    def __init__(self, statuses: dict[int, str]):
+        self.statuses, self.down, self.asked = statuses, False, []
+
+    async def get_chat_member(self, chat_id, user_id):
+        from types import SimpleNamespace
+        self.asked.append((chat_id, user_id))
+        if self.down:
+            raise RuntimeError("Telegram недоступен")
+        return SimpleNamespace(status=self.statuses.get(user_id, "left"), is_member=False)
+
+
+@pytest.fixture
+async def grouped(tmp_path):
+    """Кабинет с рабочей группой: MEMBER и MEMBER2 в команде и пока оба состоят в группе."""
+    bot = FakeGroupBot({MEMBER: "member", MEMBER2: "administrator"})
+    world = await make_world(tmp_path, bot=bot)
+    await world.db.set_setting("workspace_chat_id", str(GROUP))
+    world.bot = bot
+    yield world
+    await world.client.close()
+    await world.db.close()
 
 
 @pytest.fixture
@@ -257,8 +286,6 @@ async def test_k1_six_requests_from_different_people_become_six_leads(w):
     assert all(l["score"] == 9 for l in leads)
 
 
-@pytest.mark.xfail(strict=False, reason="K1: конвейер отсекает почти одинаковые заявки как дубли — чинит модуль B в pipeline.py; "
-                                        "после слияния B метку снять")
 async def test_k1_six_lookalike_requests_become_six_leads(w):
     """Тёзки без текста, телефоны отличаются парой цифр — это всё равно шесть разных людей."""
     slug = await w.magnet()
@@ -334,6 +361,55 @@ async def test_integrations_are_listed_for_owner_only(w):
     member = await (await w.client.get("/api/settings", headers=auth(MEMBER))).json()
     assert owner["integrations"] and member["integrations"] == []
     await error_of(await w.client.post("/api/integrations", json={"key": "gemini_api_key", "value": "x"}, headers=auth(MEMBER)), 403)
+
+
+# ---------- V2 в кабинете: доступ проверяет Guard модуля C ----------
+
+async def test_v2_member_who_left_workspace_group_loses_cabinet(grouped):
+    w, bot = grouped, grouped.bot
+    assert (await w.client.get("/api/leads", headers=auth(MEMBER))).status == 200
+    bot.statuses[MEMBER] = "left"  # вышел из группы, событие до бота не дошло
+    w.api.guard.member_ttl = 0
+    err = await error_of(await w.client.get("/api/leads", headers=auth(MEMBER)), 403)
+    assert "команд" in err
+    assert not await w.db.is_member(MEMBER)
+    # всё остальное ему тоже закрыто, включая запись
+    await error_of(await w.client.post("/api/leads/1/status", json={"status": "taken"}, headers=auth(MEMBER)), 403)
+    await error_of(await w.client.post("/api/settings", json={"geo": "Казань"}, headers=auth(MEMBER)), 403)
+    assert (await w.db.get_lead(1))["status"] == "new" and await w.db.get_setting("geo", "") == ""
+    # тот, кто остался в группе, и владелец работают дальше
+    assert (await w.client.get("/api/leads", headers=auth(MEMBER2))).status == 200
+    r = await w.client.get("/api/settings", headers=auth())
+    assert r.status == 200 and [m["user_id"] for m in (await r.json())["team"]] == [MEMBER2]
+
+
+async def test_v2_cabinet_asks_telegram_once_per_ttl_and_never_for_owner(grouped):
+    w, bot = grouped, grouped.bot
+    for path in ("/api/me", "/api/leads", "/api/stats", "/api/settings"):
+        assert (await w.client.get(path, headers=auth(MEMBER))).status == 200
+    assert bot.asked == [(GROUP, MEMBER)]  # ответ Telegram запомнен, лишних запросов нет
+    bot.asked.clear()
+    assert (await w.client.get("/api/me", headers=auth())).status == 200
+    assert bot.asked == []  # владельцу группа не нужна
+
+
+async def test_v2_telegram_down_keeps_last_answer_but_never_grants(grouped):
+    w, bot = grouped, grouped.bot
+    assert (await w.client.get("/api/me", headers=auth(MEMBER))).status == 200
+    w.api.guard.member_ttl = 0
+    bot.down = True
+    assert (await w.client.get("/api/me", headers=auth(MEMBER))).status == 200  # сеть моргнула — участника не выкидываем
+    # про MEMBER2 Telegram ещё ни разу не ответил: не знаем — не пускаем, но и из команды не удаляем
+    await error_of(await w.client.get("/api/me", headers=auth(MEMBER2)), 403)
+    assert await w.db.is_member(MEMBER) and await w.db.is_member(MEMBER2)
+    bot.down = False
+    assert (await w.client.get("/api/me", headers=auth(MEMBER2))).status == 200
+
+
+async def test_v2_without_workspace_group_team_table_decides(w):
+    """Рабочей группы нет — команду ведёт владелец; посторонний не проходит, участник проходит."""
+    assert (await w.client.get("/api/me", headers=auth(MEMBER))).status == 200
+    assert "команд" in await error_of(await w.client.get("/api/me", headers=auth(999)), 403)
 
 
 # ---------- V13–V16: проверка значений ----------

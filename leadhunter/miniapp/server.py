@@ -91,8 +91,10 @@ class MiniAppAPI:
         if not isinstance(user, dict) or isinstance(user.get("id"), bool) or not isinstance(user.get("id"), int):
             raise web.HTTPUnauthorized(text="bad initData")
         uid = int(user["id"])
-        if not (await self.guard.is_owner(uid) or await self.db.is_member(uid)):
-            raise web.HTTPForbidden(text="not a team member")
+        # Доступ решает Guard бота: владелец или участник, который всё ещё состоит в рабочей группе
+        if not await self.guard.allowed_id(uid):
+            raise web.HTTPForbidden(text="Нет доступа: вы не в команде. Нажмите любую кнопку бота в рабочей группе "
+                                         "или попросите владельца.")
         user["is_owner"] = await self.guard.is_owner(uid)
         return user
 
