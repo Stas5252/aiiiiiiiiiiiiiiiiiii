@@ -25,6 +25,15 @@ def parse_yandex_items(body: str) -> list[dict]:
     return [x for x in items if x.get("type") == "business" and x.get("id") and x.get("address")]
 
 
+def company_meta(item: dict, city: str, query: str = "", site: str = "") -> dict:
+    """Что карты знают о компании — сохраняется с лидом и идёт в досье (конкуренты той же рубрики и города)."""
+    cats = [c.get("name", "") for c in item.get("categories") or [] if c.get("name")]
+    rating = item.get("ratingData") or {}
+    meta = {"category": cats[0] if cats else query, "city": city, "address": item.get("address", ""), "site": site,
+            "rating": rating.get("ratingValue"), "reviews": rating.get("reviewCount")}
+    return {k: v for k, v in meta.items() if v}
+
+
 def business_lead(item: dict, query: str, city: str) -> Lead:
     phones = ", ".join(p.get("number", "") for p in item.get("phones") or [] if p.get("number"))
     socials = ", ".join(s.get("href", "") for s in item.get("socialLinks") or [] if s.get("href"))
@@ -39,6 +48,7 @@ def business_lead(item: dict, query: str, city: str) -> Lead:
         url=f"https://yandex.ru/maps/org/{item['id']}",
         contact=", ".join(filter(None, [phones, socials])),
         preset_score=6,
+        extra={"meta": company_meta(item, city, query)},
     )
 
 
@@ -53,6 +63,7 @@ def audit_lead(item: dict, site: str, problem: str, city: str) -> Lead:
         url=f"https://yandex.ru/maps/org/{item['id']}",
         contact=phones,
         preset_score=5,
+        extra={"meta": company_meta(item, city, site=site)},
     )
 
 

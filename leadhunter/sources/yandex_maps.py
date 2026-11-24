@@ -18,6 +18,7 @@ def parse_features(data: dict, query: str, city: str) -> list[Lead]:
             continue
         phones = ", ".join(p.get("formatted", "") for p in meta.get("Phones", []) if p.get("formatted"))
         categories = ", ".join(c.get("name", "") for c in meta.get("Categories", []))
+        first = next((c["name"] for c in meta.get("Categories", []) if c.get("name")), query)
         leads.append(Lead(
             source="yandex_maps",
             external_id=str(meta["id"]),
@@ -26,6 +27,7 @@ def parse_features(data: dict, query: str, city: str) -> list[Lead]:
             url=f"https://yandex.ru/maps/org/{meta['id']}",
             contact=phones,
             preset_score=6,
+            extra={"meta": {k: v for k, v in (("category", first), ("city", city), ("address", meta.get("address", ""))) if v}},
         ))
     return leads
 
