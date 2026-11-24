@@ -366,7 +366,8 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
     then warn "Не удалось записать службу systemd — запускайте бота вручную."; return 0; fi
-    if as_root systemctl daemon-reload && as_root systemctl enable --now leadhunter; then
+    # restart, а не enable --now: при повторной установке служба уже работает и должна перейти на новый код
+    if as_root systemctl daemon-reload && as_root systemctl enable leadhunter && as_root systemctl restart leadhunter; then
         STARTED=1
         ok "Служба запущена. Логи: journalctl -u leadhunter -f"
     else

@@ -510,7 +510,9 @@ def test_install_systemd_service(box):
     assert res.returncode == 0, res.text
     unit = (box.root / "etc/systemd/system/leadhunter.service").read_text()
     assert f"WorkingDirectory={box.proj}" in unit and "-m leadhunter" in unit and "User=tester" in unit
-    assert box.called("systemctl daemon-reload") and box.called("systemctl enable --now leadhunter")
+    assert box.called("systemctl daemon-reload") and box.called("systemctl enable leadhunter")
+    # Повторный запуск (новая ветка, новые настройки): работающая служба должна перейти на новый код
+    assert box.called("systemctl restart leadhunter")
     assert "бот запущен" in res.text and "ещё не запущен" not in res.text
 
 
