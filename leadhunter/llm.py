@@ -61,13 +61,20 @@ def parse_bool(value) -> bool:
     return bool(value)
 
 
+_RUB_NOISE = re.compile(r"₽|руб\w*\.?|\bр\.?|\bдо\b|[\s\u00a0\-–—]")
+
+
 def parse_rub(value) -> int | None:
-    """15000, "15 000", "до 15 000 ₽" → 15000. null, текст без числа, ноль — None: сумму не знаем."""
+    """15000, "15 000", "до 15 000 ₽" → 15000; вилка "5 000–20 000 ₽" → верхняя граница.
+    null, ноль и всё, что не одно только число в рублях («от 5000», «15 тыс»), — None: лучше не знать сумму, чем ошибиться."""
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, str):
-        m = re.search(r"\d[\d\s\u00a0]*", value)
-        value = re.sub(r"\D", "", m.group()) if m else ""
+        text = re.sub(r"(\d)[.,]0+\b", r"\1", value.lower())  # «15000.0» — это 15000
+        numbers = [re.sub(r"\D", "", n) for n in re.findall(r"\d[\d\s\u00a0]*", text)]
+        if not numbers or _RUB_NOISE.sub("", re.sub(r"\d", "", text)):
+            return None
+        value = max(int(n) for n in numbers)
     try:
         amount = int(float(value))
     except (TypeError, ValueError, OverflowError):

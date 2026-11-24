@@ -227,6 +227,9 @@ async def test_owner_rule_beats_minimum_checked_after_ai(db):
     (15000, 15000), (15000.0, 15000), ("15000", 15000), ("15 000", 15000), ("до 15\u00a0000 ₽", 15000),
     (None, None), ("null", None), ("", None), ("не назван", None), (0, None), (-5, None), (True, None),
     ([], None), (10 ** 12, None),
+    # вилка — верхняя граница; строка не только из суммы в рублях — сумму не знаем
+    ("5 000–20 000 ₽", 20000), ("5000 - 20000 руб.", 20000), ("15000.0", 15000), ("20 000 р.", 20000),
+    ("от 5000", None), ("15 тыс", None), ("15к", None), ("200 $", None), ("3000 руб/час", None), ("15.5", None),
 ])
 def test_ai_budget_in_rubles_is_parsed_as_number(raw, rub):
     assert parse_rub(raw) == rub
