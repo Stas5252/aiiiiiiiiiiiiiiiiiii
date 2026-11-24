@@ -236,7 +236,7 @@ async def test_hh_rejection_is_explained(monkeypatch):
 # --- №15: выключенные группы не опрашиваются; сбой DDG — это сбой, а не пустая выдача ---
 
 async def test_disabled_groups_are_not_polled(db, monkeypatch):
-    s = settings(hh_user_agent="MyStudio/1.0 (me@studio.ru)", web_search_sites=["vc.ru"], threads_web_enabled=False,
+    s = settings(hh_enabled=True, hh_user_agent="MyStudio/1.0 (me@studio.ru)", web_search_sites=["vc.ru"], threads_web_enabled=False,
                  kwork_enabled=False, weblancer_enabled=False, freelance_ru_enabled=False, rss_feeds=[],
                  yandex_web_enabled=False, ig_web_enabled=False)
     sources = {x.name: x for x in build_sources(s, db, PhraseProvider(db, ["нужен сайт"]))}

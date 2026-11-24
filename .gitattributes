@@ -1,0 +1,5 @@
+# Скрипты всегда с переводами строк Unix, иначе bash их не запустит (архив, собранный на Windows)
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+.env.example text eol=lf

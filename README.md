@@ -52,7 +52,7 @@
 | **FL.ru** | RSS заказов | ✅ |
 | **Яндекс.Карты** | Поиск «стоматология Тула» → 25 организаций с сайтом/телефоном/соцсетями прямо в HTML. **Без сайта** → лид с телефоном | ✅ |
 | **Аудит сайтов** | У кого сайт есть — проверяем: не открывается / без HTTPS / не мобильный / заглушка → лид на редизайн | ✅ |
-| **hh.ru** | Проектные вакансии (публичный API, нужен `HH_USER_AGENT` с почтой) | блокирует IP дата-центров |
+| **hh.ru** | Проектные вакансии (публичный API). Выключен по умолчанию: включается `HH_ENABLED=true` + `HH_USER_AGENT` с вашей настоящей почтой, иначе hh отвечает 400 | блокирует IP дата-центров |
 | **Поисковики** | `site:vc.ru "нужен сайт"` через DuckDuckGo | медленно, часы задержки |
 
 ### Нужен аккаунт или ключ
@@ -76,15 +76,44 @@
 curl -fsSL https://raw.githubusercontent.com/Stas5252/aiiiiiiiiiiiiiiiiiii/main/install.sh | bash
 ```
 
-или, если репозиторий уже скачан: `git clone https://github.com/Stas5252/aiiiiiiiiiiiiiiiiiii.git && cd aiiiiiiiiiiiiiiiiiii && ./install.sh`.
+или в два шага: `git clone https://github.com/Stas5252/aiiiiiiiiiiiiiiiiiii.git && cd aiiiiiiiiiiiiiiiiiii && ./install.sh`.
 
-Если Docker есть (или вы согласитесь его поставить) — бот работает в контейнере. Если нет — установщик настроит Python-окружение,
-ffmpeg, cloudflared и (на Linux) службу systemd, чтобы бот стартовал сам. Токены в терминале не показываются, `.env` получает права 600.
-Обновление позже: `./update.sh`.
+Если первая команда отвечает `404`, значит код ещё не перенесён в ветку `main` — возьмите его из рабочей ветки `dev`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Stas5252/aiiiiiiiiiiiiiiiiiii/dev/install.sh | LEADHUNTER_BRANCH=dev bash
+```
+
+Если Docker есть (или вы согласитесь его поставить) — бот работает в контейнере. Если нет или Docker не встал — установщик настроит
+Python-окружение, ffmpeg, cloudflared и службу systemd, чтобы бот стартовал сам. Там, где systemd нет (WSL, контейнер), установщик
+в конце покажет команду ручного запуска. Перед запуском он проверяет `.env` и, если в нём ошибка, говорит по-русски, какую строку исправить.
+Токены в терминале не показываются, `.env` получает права 600. На чистой Ubuntu ничего ставить заранее не нужно: `curl`, `git`, Python и ffmpeg установщик доставит сам.
+
+Обновление позже: `./update.sh` (забирает код, проверяет `.env`, перезапускает бота; если обновить не вышло — пишет причину).
+
+Повторный запуск `./install.sh` оставляет бота в том режиме, в котором он уже работает (контейнер или Python), и перезапускает его на новом коде.
+Сменить режим: на Python — `LEADHUNTER_NO_DOCKER=1 ./install.sh` (работающий контейнер установщик остановит сам); на Docker — удалите папку `.venv`
+и запустите `./install.sh` (службу systemd он остановит сам). Так на одном токене не окажется двух ботов.
+Перейти на другую ветку: `LEADHUNTER_BRANCH=название_ветки ./install.sh` — настройки и база остаются; ветку, которой нет или в которой нет кода бота, установщик не примет.
+
+Установка без вопросов (для скриптов и серверов):
+
+```bash
+BOT_TOKEN=123456789:AAH... LEADHUNTER_YES=1 ./install.sh
+```
+
+| Переменная установщика | Что делает |
+|---|---|
+| `LEADHUNTER_YES=1` | не задавать вопросов, на всё отвечать по умолчанию (токен — из `BOT_TOKEN`, ключ ИИ — из `GEMINI_API_KEY`) |
+| `LEADHUNTER_NO_DOCKER=1` | ставить через Python, Docker не устанавливать (если контейнер бота уже работает — он будет остановлен) |
+| `LEADHUNTER_ENV_ONLY=1` | только подготовить `.env` и выйти |
+| `LEADHUNTER_SKIP_NET=1` | не проверять токен запросом в Telegram |
+| `LEADHUNTER_DIR` | куда скачать проект при запуске через `curl … \| bash` (по умолчанию `~/leadhunter`) |
+| `LEADHUNTER_REPO`, `LEADHUNTER_BRANCH` | откуда скачивать: адрес репозитория и ветка (при повторном запуске — перейти на эту ветку) |
 
 **3. Настройте всё в самом боте** — ничего больше править не нужно:
 
-1. Напишите боту `/start`. Если в `.env` не указан `OWNER_IDS`, бот попросит код владельца: он напечатан в логе при запуске (строка «Код владельца») — пришлите `/start КОД` в личку. Бот покажет, что уже настроено, и три кнопки.
+1. Подтвердите, что бот ваш, — посторонним он не отвечает. Найдите в логе бота строку «Код владельца» (установщик в конце показывает готовую команду: `docker compose logs | grep 'Код владельца'` или `journalctl -u leadhunter | grep 'Код владельца'`) и пришлите боту в личку `/start КОД`. Код одноразовый и меняется при каждом перезапуске. Вместо кода можно вписать в `.env` строку `OWNER_IDS=ваш_id` (id бот подскажет в ответ на обычный `/start`) и перезапустить бота — тогда хватит простого `/start`. Бот покажет, что уже настроено, и три кнопки.
 2. **🧭 Ниша** — выберите свою сферу кнопкой (студия, недвижимость, юрист, ремонт, бьюти, фитнес…): профиль, фразы поиска и рубрики контента настроятся сами.
 3. **🔌 Подключения** (или `/setup`) → «Gemini» → вставьте ключ. Взять его бесплатно: [aistudio.google.com](https://aistudio.google.com/apikey) → **Get API key**.
    Бот проверит ключ живым запросом, удалит ваше сообщение с ним из чата и применит без перезапуска. Так же подключаются VK, Threads, Instagram, YouTube, Serper, прокси.
@@ -100,7 +129,31 @@ ffmpeg, cloudflared и (на Linux) службу systemd, чтобы бот ст
 ### Для продвинутых: .env
 
 Всё то же самое можно задать вручную: `cp .env.example .env`, заполнить нужные строки (комментарии внутри), затем `docker compose up -d --build`
-или `pip install . && python -m leadhunter`. Значения из `.env` главнее ключей, введённых в `/setup`. Telegram-чаты через ваш аккаунт
+или `pip install . && python -m leadhunter`. Значения из `.env` главнее ключей, введённых в `/setup`.
+
+Правила файла: комментарий — отдельной строкой над переменной; пустое значение (`TG_API_ID=`) значит «не задано», бот берёт значение
+по умолчанию; пустой список (`RSS_FEEDS=`) выключает источник; пустой `DIGEST_HOUR=` выключает дайджест. Проверить файл, не запуская бота:
+`python -m leadhunter.config` (в Docker: `docker compose run --rm --no-deps leadhunter python -m leadhunter.config`). При ошибке бот не стартует
+и пишет, какую переменную поправить, например `DIGEST_TZ: неизвестный часовой пояс`.
+
+Все переменные (значения по умолчанию и пояснения — в `.env.example`):
+
+| Группа | Переменные |
+|---|---|
+| Обязательное | `BOT_TOKEN`, `OWNER_IDS` |
+| Что продаёте и что искать | `PROFILE`, `SEARCH_PHRASES` |
+| Фильтр лидов | `SCORE_THRESHOLD`, `MAX_AGE_HOURS`, `DB_PATH` |
+| Источники без API | `PROXY_URL`, `WORK_HOURS`, `THREADS_WEB_ENABLED`, `KWORK_ENABLED`, `KWORK_CATEGORIES`, `KWORK_PAGES`, `KWORK_INTERVAL`, `WEBLANCER_ENABLED`, `WEBLANCER_URLS`, `WEBLANCER_INTERVAL`, `FREELANCE_RU_ENABLED`, `FREELANCE_RU_QUERIES`, `FREELANCE_RU_INTERVAL`, `YANDEX_WEB_ENABLED`, `SITE_AUDIT_ENABLED`, `SITE_AUDIT_PER_POLL`, `IG_WEB_ENABLED`, `IG_WEB_PER_POLL`, `BROWSER_PROFILES_DIR`, `BROWSER_HEADLESS` |
+| Telegram-чаты через ваш аккаунт | `TG_API_ID`, `TG_API_HASH`, `TG_SESSION`, `TG_CHATS`, `TG_JOIN_CHATS`, `TG_SEARCH_INTERVAL`, `TG_SEARCH_WORDS`, `TG_OUTREACH_LIMIT` |
+| Биржи, вакансии, поисковики | `RSS_FEEDS`, `RSS_INTERVAL`, `HH_ENABLED`, `HH_USER_AGENT`, `HH_QUERIES`, `HH_INTERVAL`, `SERPER_API_KEY`, `WEB_SEARCH_SITES`, `WEB_SEARCH_INTERVAL` |
+| Официальные API | `THREADS_ACCESS_TOKEN`, `THREADS_INTERVAL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_HASHTAGS`, `IG_INTERVAL`, `YANDEX_GEOSEARCH_KEY`, `YANDEX_CITIES`, `YANDEX_QUERIES`, `YANDEX_INTERVAL`, `VK_TOKEN`, `VK_INTERVAL` |
+| Команда и рабочая группа | `HOT_SCORE`, `DELIVER_DM`, `SLA_MINUTES`, `SLA_MIN_SCORE`, `FOLLOWUP_HOURS`, `SPAM_CHATS_PER_HOUR`, `DISCOVER_JOIN_PER_DAY`, `WEBHOOK_URL` |
+| Кабинет (Mini App) | `MINIAPP_TUNNEL`, `MINIAPP_URL`, `MINIAPP_PORT` |
+| ИИ | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `LLM_MIN_SCORE`, `LLM_MAX_PER_HOUR`, `IMAGE_MODEL`, `TTS_MODEL`, `TTS_VOICE` |
+| Дайджест и время | `DIGEST_HOUR`, `DIGEST_TZ` |
+| Контент-фабрика | `CONTENT_DIR`, `CONTENT_HOUR`, `THREADS_USER_ID`, `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` |
+
+Telegram-чаты через ваш аккаунт
 (`TG_API_ID`/`TG_API_HASH`) — только так: `python -m leadhunter.tg_login` (в Docker: `docker compose run --rm -it leadhunter python -m leadhunter.tg_login`).
 Браузерный логин в Instagram (`python -m leadhunter.browser.login instagram`) делается на компьютере с экраном,
 затем папка `data/profiles/instagram` копируется на сервер.
@@ -111,7 +164,7 @@ ffmpeg, cloudflared и (на Linux) службу systemd, чтобы бот ст
 
 ## Что делать, если…
 
-- **Бот молчит.** Проверьте токен в `.env`/`./install.sh` и логи (`docker compose logs -f` или `journalctl -u leadhunter -f`). Бот отвечает только владельцу и команде — владелец задаётся в `OWNER_IDS` или кодом из лога (`/start КОД` в личку, строка «Код владельца»).
+- **Бот молчит.** Проверьте настройки (`python -m leadhunter.config` скажет, что не так в `.env`), токен и логи (`docker compose logs -f` или `journalctl -u leadhunter -f`). Бот отвечает только владельцу и команде — владелец задаётся в `OWNER_IDS` или кодом из лога (`/start КОД` в личку, строка «Код владельца»).
 - **Лиды не идут.** `/status` и `/sources` — видно, какой источник что нашёл и что сломалось. Проверьте, что не стоит `/pause`, что выбрана ниша (`/niche`), порог `/threshold` не слишком высокий, а для чатов Telegram подключён аккаунт.
 - **Кабинет не открывается.** `/status` покажет, поднят ли Mini App; адрес туннеля меняется при перезапуске — нажмите `/app`. Нужен cloudflared (`MINIAPP_TUNNEL=cloudflare`) или свой `MINIAPP_URL` с HTTPS.
 - **ИИ говорит «лимит».** Бесплатный лимит Gemini кончился — подождите или подключите платный ключ в `/setup`; `/status` покажет, какие функции ИИ сейчас доступны.
@@ -192,7 +245,7 @@ Telegram открывает Mini App только по публичному HTTP
 - **Видео** — вертикальный ролик 1080×1920 из сцен сценария (ffmpeg), озвучка Gemini TTS (бесплатно).
 - **Мультик кодом** (`/toon`) — 2D-мультфильм с персонажами, эмоциями, диалогами в пузырях, фонами (офис, улица,
   дом), титрами и озвучкой. ИИ пишет сценарий, движок на Pillow + ffmpeg рисует его за секунды и **бесплатно**
-  (20 секунд рендерятся ≈ 3 с). Без ИИ: `/toon Название | Директор: реплика | Разработчик: реплика`.
+  (на сервере с 2 ядрами 20 секунд мультика рендерятся примерно за 5 с, минута — за 15 с). Без ИИ: `/toon Название | Директор: реплика | Разработчик: реплика`.
 - **ИИ-мультик** (`/aivideo`) — видео генерирует нейросеть Gemini Omni клипами по 8–10 с с единым героем,
   склейка и озвучка — ffmpeg. Платно (≈ 0,07 $/сек ≈ 0,6 $ за клип), нужен биллинг в Google AI Studio.
 - **Лид-магнит** — чек-лист/гайд + анонс + публичная страница `/lp/<slug>` с формой. Заявка с неё сразу
