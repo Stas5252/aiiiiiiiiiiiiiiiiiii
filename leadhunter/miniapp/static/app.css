@@ -226,6 +226,12 @@ details.card[open] summary { margin-bottom: 12px; }
 
 /* настройки: подсказки, бренд, подключения, онбординг */
 .card[id] { scroll-margin-top: 72px; }
+#open-brief { cursor: pointer; }
+.chev { color: var(--hint); font-size: 22px; line-height: 1; }
+button.wide { width: 100%; padding: 12px; border-radius: 10px; background: var(--fg); color: var(--bg); font-weight: 600; margin-top: 10px; filter: grayscale(1); }
+#brief-intro { margin: 0 0 4px; }
+#brief-fields textarea:disabled { opacity: .45; }
+.sheet .ai.why::before { content: "Почему вам подходит · "; }
 .card > p.hint, .row-setting > p.hint { margin: 8px 0 0; }
 .row-setting.col > p.hint { margin: 0; }
 #s-integ-hint { margin: -4px 0 4px !important; }

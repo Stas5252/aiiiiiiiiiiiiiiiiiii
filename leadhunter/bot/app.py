@@ -11,6 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ErrorEvent, Message
 
 from ..integrations import scrub
+from .brief import build_brief_router
 from .callbacks import build_callbacks
 from .content import build_content_router
 from .handlers import build_router
@@ -92,6 +93,6 @@ def build_dispatcher(deps) -> Dispatcher:
     dp = Dispatcher()
     install_safety(dp, deps)
     for router in (build_router(deps), build_callbacks(deps), build_content_router(deps),
-                   build_setup_router(deps), build_onboarding_callbacks(deps)):
+                   build_setup_router(deps), build_onboarding_callbacks(deps), build_brief_router(deps)):
         dp.include_router(router)
     return dp

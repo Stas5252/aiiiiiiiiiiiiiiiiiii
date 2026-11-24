@@ -156,7 +156,7 @@ async def fill(llm, source: str) -> dict[str, str]:
 # --- текст сайта для «Заполнить за меня» ---
 _TAG_BLOCK = re.compile(r"(?is)<(script|style|noscript|svg|template)\b.*?</\1>")
 _TAG = re.compile(r"(?s)<[^>]+>")
-_URL = re.compile(r"(?i)^(?:https?://)?(?:[a-z0-9а-яё-]+\.)+[a-zа-яё]{2,}(?::\d+)?(?:/\S*)?$")
+_URL = re.compile(r"(?i)^(?:https?://\S+|(?:[a-z0-9а-яё-]+\.)+[a-zа-яё]{2,}(?::\d+)?(?:/\S*)?)$")
 
 
 def looks_like_url(value: str) -> bool:
@@ -168,14 +168,18 @@ def html_to_text(page: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(page)).strip()
 
 
+async def _resolve(host: str, port: int) -> list[str]:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
 async def _public_ip(host: str, port: int) -> str:
     """Адрес сайта в интернете. Локальные и внутренние адреса не открываем — иначе через ссылку
     можно было бы читать службы на самой машине с ботом."""
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        ips = await _resolve(host, port)
     except OSError:
         raise BriefError("Сайт не найден — проверьте ссылку") from None
-    ips = [info[4][0] for info in infos]
     if not ips or not all(ipaddress.ip_address(ip.split("%")[0]).is_global for ip in ips):
         raise BriefError("Эту ссылку открыть нельзя: адрес не из интернета")
     return ips[0]
