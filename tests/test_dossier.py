@@ -144,7 +144,7 @@ def test_bad_page_lists_problems_in_plain_words():
 
 @pytest.mark.parametrize("body", [
     "<meta " * 100_000, "<title>" * 85_000, "<h1>" * 150_000, "<" * 600_000, "a" * 600_000 + "@x.ru", "8 " * 300_000,
-    "<meta name=" * 50_000, '<meta content="' * 40_000, "© " * 300_000, "<form" * 120_000, " \n" * 300_000,
+    "<meta name=" * 50_000, '<meta content="' * 40_000, "<meta content='" * 40_000, '<meta "' + "a" * 590_000, "© " * 300_000, "<form" * 120_000, " \n" * 300_000,
 ])
 def test_hostile_page_is_parsed_in_linear_time(body):
     """Сайт по ссылке из заказа пишет посторонний: мусорная страница не должна подвешивать бота."""
@@ -166,6 +166,9 @@ def test_meta_tags_are_read_in_any_attribute_order_and_quotes():
     r = parse_page(Page("https://x.ru/", 200, body, 0.1), now=NOW)
     assert (r["description"], r["mobile"], r["cms"], r["h1"], r["h1_count"], r["title"]) == (
         "Чиним обувь", True, "Drupal 10", "Ремонт обуви", 2, "Каблук")
+    body = '<meta name="description" content="Главная > Ремонт обуви"><meta name=viewport content=width=device-width>'
+    r = parse_page(Page("https://x.ru/", 200, body, 0.1), now=NOW)
+    assert r["description"] == "Главная > Ремонт обуви" and r["mobile"]
     assert parse_page(Page("https://x.ru/", 200, "<p>Пишите: anna@firma.ru, тел. 8 (900) 123-45-67</p>", 0.1))["emails"] == ["anna@firma.ru"]
 
 

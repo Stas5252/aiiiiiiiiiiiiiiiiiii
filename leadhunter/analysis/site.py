@@ -15,12 +15,17 @@ SLOW_SECONDS = 3.0
 # разбора росло вместе с размером страницы, а не с его квадратом: в «[^<>]*» нет «<», поэтому на мусоре вроде
 # «<meta <meta <meta …» каждая попытка обрывается на следующем же «<»; конец тега ищется в ограниченном окне.
 _TAG = re.compile(r"<[^<>]*>")
-_OPEN = {name: re.compile(rf"<{name}\b[^<>]*>", re.I) for name in ("title", "h1", "meta")}
+_OPEN = {name: re.compile(rf"<{name}\b[^<>]*>", re.I) for name in ("title", "h1")}
+# У <meta> значение в кавычках может содержать «>» («Главная > Услуги»), поэтому тег читается с учётом кавычек —
+# но только в окне META_WINDOW от его начала и не больше META_LIMIT тегов на страницу
+_META_START = re.compile(r"<meta\b", re.I)
+_META_TAG = re.compile(r"<meta\b(?:[^<>\"']|\"[^\"]*\"|'[^']*')*>", re.I)
 _CLOSE = {name: re.compile(rf"</{name}\b", re.I) for name in ("title", "h1")}
 _ATTR_NAME = re.compile(r"\bname\s*=\s*[\"']?([\w:.-]+)", re.I)
-_ATTR_CONTENT = re.compile(r"\bcontent\s*=\s*(?:\"([^\"]*)\"|'([^']*)')", re.I)
+_ATTR_CONTENT = re.compile(r"\bcontent\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'<>]+))", re.I)
 INNER_LIMIT = 3000  # символов содержимого <title> и <h1> — больше в заголовке не бывает
 META_LIMIT = 300  # тегов <meta> на странице читаем не больше
+META_WINDOW = 4000  # символов на один <meta>
 _FORM = re.compile(r"<form\b", re.I)
 _SCHEMA = re.compile(r"application/ld\+json|itemtype=[\"']https?://schema\.org", re.I)
 _COPY_YEAR = re.compile(r"(?:©|&copy;|\(c\)|copyright)[^<]{0,80}", re.I)
@@ -62,10 +67,13 @@ def inner(body: str, tag: str, limit: int = 3) -> list[str]:
 def metas(body: str) -> dict[str, str]:
     """<meta name=… content=…> страницы: имя в нижнем регистре → значение (первое с таким именем)."""
     found: dict[str, str] = {}
-    for m in islice(_OPEN["meta"].finditer(body), META_LIMIT):
-        name, content = _ATTR_NAME.search(m.group()), _ATTR_CONTENT.search(m.group())
+    for start in islice(_META_START.finditer(body), META_LIMIT):
+        tag = _META_TAG.match(body, start.start(), start.start() + META_WINDOW)
+        if not tag:
+            continue
+        name, content = _ATTR_NAME.search(tag.group()), _ATTR_CONTENT.search(tag.group())
         if name and content:
-            found.setdefault(name.group(1).lower(), content.group(1) if content.group(1) is not None else content.group(2))
+            found.setdefault(name.group(1).lower(), next(g for g in content.groups() if g is not None))
     return found
 
 
