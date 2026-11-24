@@ -37,6 +37,8 @@ class Guard:
         self._claim_fails: dict[int, int] = {}  # user_id -> сколько неверных кодов прислал
         # user_id -> (когда спросили Telegram, в группе ли, про какую группу спрашивали)
         self._checked: dict[int, tuple[float, bool, int]] = {}
+        # (группа, user_id) -> запрос к Telegram, который уже идёт: параллельные обращения ждут его, а не шлют свои
+        self._asking: dict[tuple[int, int], asyncio.Future] = {}
 
     # --- владельцы ---
     async def owners(self) -> list[int]:
@@ -97,6 +99,17 @@ class Guard:
             log.warning("не удалось проверить участника %s в рабочей группе: %s", user_id, type(e).__name__)
             return None
 
+    async def _ask_once(self, chat_id: int, user_id: int) -> bool | None:
+        """Один запрос к Telegram на человека, даже если о нём спросили несколько раз одновременно
+        (кабинет при открытии шлёт сразу несколько запросов)."""
+        key = (chat_id, user_id)
+        asking = self._asking.get(key)
+        if asking is None:
+            asking = self._asking[key] = asyncio.ensure_future(self._in_workspace(chat_id, user_id))
+            asking.add_done_callback(lambda _: self._asking.pop(key, None))
+        # shield: если один из ждущих отменён (человек закрыл кабинет), остальные всё равно получат ответ
+        return await asyncio.shield(asking)
+
     async def member_ok(self, user_id: int, force: bool = False) -> bool:
         """Участник команды, который всё ещё состоит в рабочей группе. Вышедшего убираем из команды."""
         if not await self.db.is_member(user_id):
@@ -109,7 +122,7 @@ class Guard:
             hit = None  # ответ был про прежнюю рабочую группу — в новой он ничего не значит
         if hit and not force and time.monotonic() - hit[0] < self.member_ttl:
             return hit[1]
-        present = await self._in_workspace(ws, user_id)
+        present = await self._ask_once(ws, user_id)
         if present is None:
             return hit[1] if hit else False  # Telegram недоступен: верим прошлому ответу, без него не пускаем
         if not present:
