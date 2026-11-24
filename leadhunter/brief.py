@@ -185,9 +185,10 @@ async def _public_ip(host: str, port: int) -> str:
     return ips[0]
 
 
-async def site_text(url: str, *, proxy: str | None = None, timeout: int = 15) -> str:
+async def site_text(url: str, *, timeout: int = 15) -> str:
     """Текст главной страницы сайта. Каждый адрес (и после переадресации) проверяется и закрепляется
-    за проверенным IP — подменить его между проверкой и запросом нельзя."""
+    за проверенным IP — подменить его между проверкой и запросом нельзя. Прокси (PROXY_URL) здесь
+    не используется: через него адрес определял бы сам прокси, и проверка ничего бы не значила."""
     from curl_cffi import CurlOpt
     from curl_cffi.requests import AsyncSession
 
@@ -202,8 +203,7 @@ async def site_text(url: str, *, proxy: str | None = None, timeout: int = 15) ->
         ip = await _public_ip(parts.hostname, port)
         pin = f"{parts.hostname}:{port}:{'[' + ip + ']' if ':' in ip else ip}"
         try:
-            async with AsyncSession(impersonate="chrome", proxy=proxy, timeout=timeout,
-                                    curl_options={CurlOpt.RESOLVE: [pin]}) as s:
+            async with AsyncSession(impersonate="chrome", timeout=timeout, curl_options={CurlOpt.RESOLVE: [pin]}) as s:
                 r = await s.get(url, allow_redirects=False, stream=True)
                 try:
                     if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
@@ -229,11 +229,11 @@ async def site_text(url: str, *, proxy: str | None = None, timeout: int = 15) ->
     raise BriefError("Слишком много переадресаций — вставьте текст вручную")
 
 
-async def fill_from(llm, source: str, *, proxy: str | None = None) -> dict[str, str]:
+async def fill_from(llm, source: str) -> dict[str, str]:
     """source — текст о себе или ссылка на сайт."""
     source = source.strip()
     if len(source) < 20 and not looks_like_url(source):
         raise BriefError("Пришлите текст о себе (хотя бы пару предложений) или ссылку на сайт")
     if looks_like_url(source):
-        source = "Текст с сайта исполнителя:\n" + await site_text(source, proxy=proxy)
+        source = "Текст с сайта исполнителя:\n" + await site_text(source)
     return await fill(llm, source)

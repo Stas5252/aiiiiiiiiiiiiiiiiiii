@@ -194,9 +194,8 @@ def build_brief_router(deps) -> Router:
         if await can_edit(m) or not deps.llm:
             return
         wait = await m.answer("Читаю…")
-        s = deps.extra.get("settings")
         try:
-            found = await brief.fill_from(deps.llm, m.text, proxy=getattr(s, "proxy_url", None))
+            found = await brief.fill_from(deps.llm, m.text)
         except brief.BriefError as e:
             await wait.edit_text(f"Не получилось: {html.escape(str(e))}\n\nЕщё раз: /brief")
             return

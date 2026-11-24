@@ -334,6 +334,7 @@ class FakeSite:
                 return False
 
             async def get(self, url, **opts):
+                assert not kw.get("proxy") and not kw.get("proxies")  # через прокси закрепить проверенный адрес нельзя
                 site.requests.append((url, list(kw["curl_options"].values())[0], opts.get("allow_redirects")))
                 return Response(*site.responses.pop(0))
 
@@ -386,6 +387,22 @@ async def test_site_errors_are_plain_words(dns, monkeypatch):
         await brief.site_text("example.ru")
     with pytest.raises(brief.BriefError, match="не найден"):
         await brief.site_text("no-such-site.example")
+
+
+async def test_site_is_fetched_directly_even_when_proxy_is_configured(dns, monkeypatch, env, w):
+    import curl_cffi.requests
+
+    page = ("<p>" + "Студия Ромашка: сайты и боты для малого бизнеса. " * 10 + "</p>").encode()
+    site = FakeSite([(200, {}, page), (200, {}, page)])
+    monkeypatch.setattr(curl_cffi.requests, "AsyncSession", site.session)
+    env.settings.proxy_url = "http://proxy.example:3128"  # прокси для бирж
+    w.deps.extra["settings"] = env.settings
+    w.deps.llm = env.deps.llm = FillLLM()
+    r = await w.client.post("/api/brief/fill", headers=auth(), json={"source": "https://example.ru"})
+    assert r.status == 200, await r.text()
+    await env.tap("br:fill")
+    assert "Вот что я понял" in await env.say("https://example.ru")
+    assert [pin for _, pin, _ in site.requests] == [["example.ru:443:93.184.216.34"]] * 2
 
 
 async def test_fill_from_link_reads_site_then_asks_ai(dns, monkeypatch):

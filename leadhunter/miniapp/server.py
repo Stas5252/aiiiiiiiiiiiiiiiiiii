@@ -347,9 +347,8 @@ class MiniAppAPI:
         if not self.deps.llm:
             raise bad("ИИ не подключён. Подключите его в Настройках → Подключения или командой /setup в боте.")
         source = to_str((await json_object(request)).get("source", ""), "source", 12000)
-        s = self.deps.extra.get("settings")
         try:
-            found = await brief.fill_from(self.deps.llm, source, proxy=getattr(s, "proxy_url", None))
+            found = await brief.fill_from(self.deps.llm, source)
         except brief.BriefError as e:
             raise bad(str(e))
         except Exception as e:
