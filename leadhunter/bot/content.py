@@ -2,7 +2,6 @@
 import html
 import json
 import logging
-import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -45,7 +44,6 @@ class ContentState(StatesGroup):
     topic = State()
 
 
-WAIT_MINUTES = 15  # столько бот ждёт ответ на «о чём?» и «пришлите текст»; позже сообщение — уже не ответ
 NEED_AI = "Нужен ИИ — подключите его в /setup"
 
 
@@ -69,24 +67,6 @@ def needs_rebuild(row) -> bool:
     if m.get("error") or m.get("note"):
         return True
     return (row["kind"] in VIDEO_KINDS and not m.get("video")) or (row["kind"] == "carousel" and not m.get("images"))
-
-
-class _ContentRouter(Router):
-    """Роутер контента. При подключении к диспетчеру вешает на него сброс «жду ответ»: любая команда
-    (в том числе чужого роутера, например /leads) отменяет ожидание темы или правки."""
-
-    @Router.parent_router.setter
-    def parent_router(self, router: Router) -> None:
-        Router.parent_router.fset(self, router)
-        router.message.outer_middleware(_drop_waiting)
-
-
-async def _drop_waiting(handler, event, data):
-    state = data.get("state")
-    if state is not None and isinstance(event, Message) and (event.text or "").startswith("/"):
-        if (await state.get_state() or "").startswith("ContentState:"):
-            await state.clear()
-    return await handler(event, data)
 
 
 def keyboard(row) -> InlineKeyboardMarkup:
@@ -204,7 +184,7 @@ def format_card(row, tz: str = "Europe/Moscow") -> str:
 
 
 def build_content_router(deps) -> Router:
-    router = _ContentRouter()
+    router = Router()
     db, guard = deps.db, deps.guard
 
     def factory() -> ContentFactory | None:
@@ -263,7 +243,7 @@ def build_content_router(deps) -> Router:
                 topic = (command.args or "").strip()
                 if not topic:
                     await state.set_state(ContentState.topic)
-                    await state.update_data(kind=kind, asked_at=time.time())
+                    await state.update_data(kind=kind)
                     await m.answer(f"{kind_label(kind)} — о чём? Напишите тему одним сообщением.")
                     return
                 await _run(m, kind, topic)
@@ -285,15 +265,10 @@ def build_content_router(deps) -> Router:
         else:
             await m.answer(f"{NO_AI} {MANUAL_HINT}")
 
-    def expired(data: dict) -> bool:
-        return time.time() - float(data.get("asked_at") or 0) > WAIT_MINUTES * 60
-
     @router.message(ContentState.topic, F.text, ~F.text.startswith("/"))
     async def topic_reply(m: Message, state: FSMContext):
         data = await state.get_data()
         await state.clear()
-        if expired(data):
-            return  # вопрос «о чём?» был давно — это сообщение уже не ответ на него
         if await ready(m):
             await _run(m, data.get("kind", "post"), m.text.strip())
 
@@ -531,7 +506,7 @@ def build_content_router(deps) -> Router:
         data = await state.get_data()
         await state.clear()
         f = factory()
-        row = await f.store.get(data["item_id"]) if f and not expired(data) else None
+        row = await f.store.get(data["item_id"]) if f else None
         if not row:
             return
         if row["status"] not in ("draft", "scheduled"):
@@ -558,7 +533,7 @@ def build_content_router(deps) -> Router:
         data = await state.get_data()
         await state.clear()
         f = factory()
-        row = await f.store.get(data["item_id"]) if f and not expired(data) else None
+        row = await f.store.get(data["item_id"]) if f else None
         if not row:
             return
         wait = await m.answer("Переписываю…")
@@ -704,7 +679,7 @@ def build_content_router(deps) -> Router:
             await cq.answer("Править можно только черновик", show_alert=True)
             return
         await state.set_state(ContentState.edit)
-        await state.update_data(item_id=row["id"], asked_at=time.time())
+        await state.update_data(item_id=row["id"])
         what = "текст поста" if row["kind"] == "post" else "текст анонса" if row["kind"] == "magnet" else "подпись"
         await cq.message.reply(f"Пришлите исправленный {what} #{row['id']} одним сообщением — я заменю и запомню стиль правок.")
         await cq.answer()
@@ -717,7 +692,7 @@ def build_content_router(deps) -> Router:
             await cq.answer(NEED_AI, show_alert=True)
             return
         await state.set_state(ContentState.rewrite)
-        await state.update_data(item_id=row["id"], asked_at=time.time())
+        await state.update_data(item_id=row["id"])
         await cq.message.reply(f"Что поменять в #{row['id']}? Например: «короче, на ты, добавь пример с ценой».")
         await cq.answer()
 

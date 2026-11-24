@@ -19,6 +19,7 @@ from aiogram.exceptions import TelegramRetryAfter
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
+from leadhunter.bot.app import build_dispatcher
 from leadhunter.bot.content import format_card
 from leadhunter.content.factory import brand_from_setting, compose_text
 from leadhunter.content.media import MediaStore
@@ -681,7 +682,10 @@ async def test_30_manual_toon_puts_every_speaker_in_frame(env_noai, monkeypatch)
 
 # ---------- M11: «о чём?» не висит вечно ----------
 
-async def test_m11_other_command_cancels_waiting_for_topic(env):
+async def test_m11_content_input_modes_are_cancelled_by_any_command(env):
+    """Сброс делает общий предохранитель модуля C (bot/app.py: StateReset). Здесь — что режимы ввода
+    контент-фабрики (тема, правка текста) под него попадают на диспетчере, собранном как в main.py."""
+    env.dp = build_dispatcher(env.deps)
     assert "о чём?" in (await env.text("/post"))[0]
     await env.text("/leads")  # команда другого раздела бота
     await env.text("просто сообщение, не тема")
