@@ -16,7 +16,7 @@ from leadhunter.analysis.dossier import (AUTO_PER_HOUR, SYSTEM, DossierError, Do
 from leadhunter.analysis.fetch import Page
 from leadhunter.analysis.render import LIMIT, render
 from leadhunter.analysis.search import position
-from leadhunter.analysis.site import analyze_site, detect_cms, domain_of, footer_year, parse_page
+from leadhunter.analysis.site import analyze_site, detect_cms, domain_of, footer_year, parse_page, robots_allows
 from leadhunter.bot.callbacks import build_callbacks
 from leadhunter.bot.dossier import auto_dossier, build_dossier_router
 from leadhunter.bot.guard import Guard
@@ -170,6 +170,24 @@ async def test_site_closed_in_robots_is_not_read_and_reported():
     r = await analyze_site("secret.ru", get=web)
     assert web.asked == ["https://secret.ru/robots.txt"]  # главную не запрашивали
     assert not r["ok"] and r["problems"] == ["закрыт от поисковиков в robots.txt"]
+
+
+@pytest.mark.parametrize("robots, url, allowed", [
+    ("User-agent: *\nDisallow: /\nAllow: /$\n", "https://x.ru", True),  # открыта только главная
+    ("User-agent: *\nDisallow: /\nAllow: /$\n", "https://x.ru/price", False),
+    ("User-agent: *\nDisallow: /*\n", "https://x.ru/", False),  # «/*» — то же, что «/»
+    ("User-agent: *\nDisallow: /\nAllow: /tula/\n", "https://x.ru/tula/shop", True),  # точнее — значит главнее
+    ("User-agent: *\nAllow: /\nDisallow: /\n", "https://x.ru/", True),  # поровну — побеждает разрешение
+    ("User-agent: *\nDisallow: /*?\nDisallow: /*.pdf$\n", "https://x.ru/", True),
+    ("User-agent: *\nDisallow: /*?\n", "https://x.ru/catalog?page=2", False),
+    ("User-agent: *\nDisallow:\n", "https://x.ru/", True),  # пустой запрет ничего не запрещает
+    ("User-agent: Yandex\nDisallow: /\n\nUser-agent: *\nDisallow: /admin # служебное\n", "https://x.ru/", True),
+    ("User-agent: Googlebot\nUser-agent: *\nDisallow: /\n", "https://x.ru/", False),  # одна группа на двух роботов
+    ("User-agent: *\nDisallow: /\n\nUser-agent: LeadHunterBot\nAllow: /\n", "https://x.ru/", True),
+    ("", "https://x.ru/", True),
+])
+def test_robots_rules_are_read_like_search_engines_do(robots, url, allowed):
+    assert robots_allows(robots, url) is allowed
 
 
 async def test_sitemap_from_robots_saves_a_request():

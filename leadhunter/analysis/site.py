@@ -3,7 +3,6 @@ import html
 import re
 from datetime import datetime
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 from ..audit import PARKED_RE, VIEWPORT_RE
 from ..extract import EMAIL_RE, PHONE_RE
@@ -96,10 +95,48 @@ def parse_page(page: Page, *, now: datetime | None = None) -> dict:
     return report
 
 
+def robots_rules(robots: str, agent: str = AGENT) -> list[tuple[bool, str]]:
+    """Правила (разрешено?, шаблон пути) для нашего робота: его собственная группа, иначе группа «*»."""
+    groups: dict[str, list[tuple[bool, str]]] = {}
+    current: list[str] = []
+    in_rules = False
+    for line in robots.splitlines():
+        key, sep, value = line.split("#", 1)[0].partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if not sep:
+            continue
+        if key == "user-agent":
+            if in_rules:  # после правил начинается новая группа
+                current, in_rules = [], False
+            current.append(value.lower())
+            groups.setdefault(value.lower(), [])
+        elif key in ("allow", "disallow") and current:
+            in_rules = True
+            if value:  # пустой Disallow ничего не запрещает
+                for name in current:
+                    groups[name].append((key == "allow", value))
+    own = next((rules for name, rules in groups.items() if name != "*" and name in agent.lower()), None)
+    return own if own is not None else groups.get("*", [])
+
+
+def _rule_matches(pattern: str, path: str) -> bool:
+    """Шаблон robots.txt: «*» — любые символы, «$» в конце — конец адреса; без «$» — начало пути."""
+    anchored = pattern.endswith("$")
+    body = pattern[:-1] if anchored else pattern
+    regex = "".join(".*" if ch == "*" else re.escape(ch) for ch in body) + ("$" if anchored else "")
+    return re.match(regex, path) is not None
+
+
 def robots_allows(robots: str, url: str) -> bool:
-    parser = RobotFileParser()
-    parser.parse(robots.splitlines())
-    return parser.can_fetch(AGENT, url)
+    """Как у поисковиков: побеждает самое длинное подходящее правило, при равной длине — разрешающее.
+    Стандартный разборщик Python не понимает «*» и «$» и берёт первое подходящее правило, а не самое точное."""
+    parts = urlsplit(url)
+    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    best_len, allowed = -1, True
+    for allow, pattern in robots_rules(robots):
+        if _rule_matches(pattern, path) and (len(pattern) > best_len or (len(pattern) == best_len and allow)):
+            best_len, allowed = len(pattern), allow
+    return allowed
 
 
 async def analyze_site(url: str, *, get=fetch, now: datetime | None = None) -> dict:
