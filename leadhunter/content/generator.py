@@ -11,16 +11,31 @@ from datetime import datetime, timedelta, timezone
 from .. import brief, features
 from ..db import Database
 from ..llm import LLMClassifier
+from .render import plain
 from .store import ContentStore
 
 log = logging.getLogger(__name__)
 
-SYSTEM = """Ты — контент-маркетолог студии. Пишешь по-русски, живым языком, без канцелярита, без воды и без
-клише вроде «в современном мире». Конкретика, цифры, примеры, польза для читателя. Эмодзи — умеренно.
+SYSTEM = """Ты пишешь тексты для соцсетей исполнителя. По-русски, живым языком, без канцелярита, без воды и без
+клише вроде «в современном мире». Польза для читателя и конкретика. Эмодзи — умеренно.
 Кто исполнитель и что продаёт (бриф):
 {profile}
+{rules}
 {voice}{examples}{edits}{pains}
 Ответ — строго JSON по схеме, без пояснений."""
+
+# главное правило: факты только из брифа. Программа после ИИ ещё раз сверяет цифры (content/facts.py)
+RULES = """Правила честности (обязательны):
+- Факты об исполнителе — услуги, цены, сроки, кейсы, условия работы — бери только из брифа, слово в слово по смыслу.
+- Не придумывай цифры, проценты, статистику, «исследования», результаты клиентов («заявок стало больше», «продажи выросли»),
+  отзывы, названия компаний и сроки. Нужной цифры в брифе нет — пиши без цифры.
+- О кейсе говори только то, что о нём написано в брифе: что это за сайт и что на нём есть. Результат кейса не выдумывай.
+- Не обещай того, чего нет в брифе: гарантий, мест в поиске, роста заявок.
+- Советы и ошибки можно описывать по здравому смыслу, но без чисел и без «по статистике»."""
+SOLO = "- Исполнитель работает один: пиши от первого лица — «я», «делаю», «покажу». «Мы», «наша команда», «наши клиенты» не пиши."
+THREADS = ("версия для Threads: один пост до 450 знаков, разговорно, как человек пишет в ленту: первая строка цепляет, "
+           "дальше одна мысль и вопрос или призыв; без хэштегов, без списков и без ссылок")
+ACCENT = "В заголовке можно выделить звёздочками одно-два главных слова, например: «Почему сайт *не приносит* заявки»."
 
 IDEA_KINDS = ("post", "carousel", "reel", "toon", "magnet")
 SCHEMAS = {
@@ -28,18 +43,21 @@ SCHEMAS = {
 Структура: цепляющая первая строка (хук), 3–6 коротких абзацев, в конце мягкий призыв написать в личку / оставить заявку.
 Длина 600–1200 знаков. Хэштеги — 5–8 релевантных, по-русски и по-английски.
 JSON: {{"title": "короткий заголовок до 60 знаков", "body": "текст поста с переносами строк",
+"threads": "{threads}",
 "hashtags": ["#тег", ...], "image_prompt": "описание картинки к посту на английском, без текста на картинке, 1 предложение"}}""",
     "carousel": """Сделай карусель (слайды) на тему: «{topic}».
 7–9 слайдов. Слайд 1 — обложка: заголовок до 8 слов + подзаголовок до 12 слов. Слайды 2–N: заголовок до 6 слов
 и 1–3 коротких предложения (до 220 знаков). Последний слайд — призыв к действию и что получит человек.
-JSON: {{"title": "название карусели", "slides": [{{"title": "...", "text": "..."}}, ...],
-"caption": "подпись под каруселью 300–600 знаков с призывом", "hashtags": ["#тег", ...],
+{accent} Если слайд рассказывает о кейсе из брифа, добавь ему "shot" — ссылку на этот кейс
+из брифа (на слайде будет снимок сайта); таких слайдов не больше двух. У остальных слайдов "shot" не нужен.
+JSON: {{"title": "название карусели", "slides": [{{"title": "...", "text": "...", "shot": ""}}, ...],
+"caption": "подпись под каруселью для Instagram 300–600 знаков с призывом", "threads": "{threads}", "hashtags": ["#тег", ...],
 "image_prompt": "описание обложки на английском, без текста"}}""",
     "reel": """Напиши сценарий короткого вертикального видео (Reels / Shorts / TikTok) на 20–40 секунд на тему: «{topic}».
 Первые 3 секунды — хук, который останавливает скролл. 5–8 сцен. Для каждой: текст на экране (до 60 знаков),
 текст озвучки (1–2 предложения, разговорно), длительность в секундах (2–6).
 JSON: {{"title": "название ролика", "hook": "первая фраза", "scenes": [{{"text": "на экране", "voice": "озвучка", "duration": 4}}, ...],
-"caption": "подпись к видео 200–400 знаков с призывом", "hashtags": ["#тег", ...]}}""",
+"caption": "подпись к видео 200–400 знаков с призывом", "threads": "{threads}", "hashtags": ["#тег", ...]}}""",
     "magnet": """Сделай лид-магнит на тему: «{topic}» — чек-лист или мини-гайд, за который человек готов оставить контакт.
 7–12 пунктов, каждый: заголовок до 8 слов и 1–3 предложения практики (не теория).
 JSON: {{"title": "название лид-магнита (до 60 знаков)", "subtitle": "что получит человек, 1 предложение",
@@ -69,7 +87,8 @@ JSON: {{"title": "название", "style": "общее описание ст�
 }
 
 REWRITE = """Ниже материал ({kind}) в JSON. Перепиши его по указанию владельца: «{instruction}».
-Сохрани ту же JSON-структуру и ключи, верни только JSON.
+Сохрани ту же JSON-структуру и ключи, верни только JSON. Поле "threads" (если оно есть) — версия для Threads:
+до 450 знаков, без хэштегов.
 
 {data}"""
 
@@ -117,6 +136,15 @@ def _s(v, sep: str = "\n") -> str:
 
 def _list(v) -> list:
     return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def _slide(v) -> dict:
+    """Слайд карусели: заголовок, текст и (для слайда о кейсе) ссылка, с которой снять сайт."""
+    out = _pair(v)
+    shot = _s(v.get("shot")) if isinstance(v, dict) else ""
+    if re.fullmatch(r"https?://[^\s<>\"']{4,300}", shot):
+        out["shot"] = shot
+    return out
 
 
 def _pair(v) -> dict:
@@ -184,7 +212,10 @@ class ContentGenerator:
             pillars = await self.db.get_setting("pillars", "")
             if pillars:
                 pains_txt += f"Рубрики контента (чередуй их): {pillars}\n"
-        return SYSTEM.format(profile=profile, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
+        from . import facts
+
+        rules = RULES + ("\n" + SOLO if facts.solo((await brief.load(self.db)).get("who") or "") else "")
+        return SYSTEM.format(profile=profile, rules=rules, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
 
     async def generate(self, kind: str, topic: str, *, platform: str = "", n: int = 7) -> dict:
         if not await features.enabled(self.db, "format_" + kind):
@@ -196,7 +227,7 @@ class ContentGenerator:
         system = await self._system(kind)
         kinds = await self.idea_kinds() if kind == "ideas" else []
         user = SCHEMAS[kind].format(topic=topic, n=n, platform=f" для {platform}" if platform else "",
-                                    kinds=", ".join(kinds), kinds_alt="|".join(kinds))
+                                    kinds=", ".join(kinds), kinds_alt="|".join(kinds), threads=THREADS, accent=ACCENT)
         data = await self._ask(kind, system, user, 0.8)
         for idea in data.get("ideas", []) if kind == "ideas" else []:
             if idea["kind"] not in kinds:
@@ -253,12 +284,15 @@ class ContentGenerator:
         for key in ("title", "caption", "image_prompt", "subtitle", "cta", "post", "hook"):
             if key in data or key in ("title", "caption", "image_prompt"):
                 data[key] = _s(data.get(key))
+        data["title"] = plain(data["title"])  # звёздочки акцента — только на слайдах, не в названии материала
+        if kind in ("post", "carousel", "reel"):
+            data["threads"] = _s(data.get("threads"), "\n\n")
         if kind == "post":
             data["body"] = _s(data.get("body"), "\n\n")  # абзацы списком склеиваем через пустую строку
             if not data["body"]:
                 raise ContentError("Пост получился пустым: в нём нет текста. Попробуйте ещё раз.")
         if kind == "carousel":
-            data["slides"] = [s for s in (_pair(x) for x in _list(data.get("slides"))) if s["title"] or s["text"]][:10]
+            data["slides"] = [s for s in (_slide(x) for x in _list(data.get("slides"))) if s["title"] or s["text"]][:10]
             if not data["slides"]:
                 raise ContentError("В карусели нет ни одного слайда. Попробуйте ещё раз.")
         if kind == "reel":

@@ -2,6 +2,7 @@
 import html
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,12 +14,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (BufferedInputFile, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup,
                            InputMediaPhoto, Message)
 
-from ..content.factory import API_PLATFORMS, MANUAL_PLATFORMS, VIDEO_KINDS, ContentFactory, compose_text, error_text
+from ..content.factory import (API_PLATFORMS, MANUAL_PLATFORMS, TEXT_KINDS, VIDEO_KINDS, ContentFactory, compose_text,
+                               error_text)
+from ..content.facts import THREADS_LIMIT, check_line
 from ..content.generator import NO_AI
 from ..content.manual import MANUAL_HINT, manual_data
 from ..content.publish import truncate_html
-from ..content.render import valid_color
-from ..content.store import KINDS, STATUSES, body_json, errors_json, media_json
+from ..content.render import plain, valid_color
+from ..content.store import KINDS, STATUSES, body_json, checks_json, errors_json, media_json, threads_text
 from .. import features
 from .guard import Guard
 
@@ -80,13 +83,16 @@ def keyboard(row) -> InlineKeyboardMarkup:
     tail = [InlineKeyboardButton(text="📦 Пакет", callback_data=f"cpk:{i}")]
     if row["status"] in ("draft", "scheduled") and needs_rebuild(row):
         tail.append(InlineKeyboardButton(text="♻️ Пересобрать", callback_data=f"cm:{i}"))
+    # у поста, карусели и ролика текст для Threads свой — и правится отдельно
+    edit = [edit_row] + ([[InlineKeyboardButton(text="✏️ Текст для Threads", callback_data=f"ce:{i}:t")]]
+                         if row["kind"] in TEXT_KINDS else [])
     if row["status"] == "draft":
         rows = [[InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"cp:{i}"),
-                 InlineKeyboardButton(text="🗓 Когда", callback_data=f"cs:{i}")], edit_row,
+                 InlineKeyboardButton(text="🗓 Когда", callback_data=f"cs:{i}")], *edit,
                 tail + [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cx:{i}")]]
     elif row["status"] == "scheduled":
         rows = [[InlineKeyboardButton(text="🚀 Сейчас", callback_data=f"cp:{i}"),
-                 InlineKeyboardButton(text="❌ Снять с плана", callback_data=f"cu:{i}")], edit_row, tail]
+                 InlineKeyboardButton(text="❌ Снять с плана", callback_data=f"cu:{i}")], *edit, tail]
     elif row["status"] == "published" and errors_json(row):
         # вышло не везде: повтор отправит только туда, куда не ушло
         rows = [[InlineKeyboardButton(text="🔁 Доотправить", callback_data=f"cp:{i}")], tail]
@@ -123,7 +129,7 @@ def format_card(row, tz: str = "Europe/Moscow") -> str:
         lines.append(e(row["body"] or ""))
     elif row["kind"] == "carousel":
         for n, s in enumerate(items(data.get("slides")), 1):
-            lines.append(f"<b>{n}. {e(s.get('title'))}</b> — {e(s.get('text'))}")
+            lines.append(f"<b>{n}. {e(plain(s.get('title')))}</b> — {e(plain(s.get('text')))}")
         if row["caption"]:
             lines.append(f"\n📝 {e(row['caption'])}")
     elif row["kind"] == "toon":
@@ -158,6 +164,12 @@ def format_card(row, tz: str = "Europe/Moscow") -> str:
             lines.append(f"\n📣 Анонс:\n{e(post)}")
     if row["hashtags"]:
         lines.append(f"\n{e(row['hashtags'])}")
+    threads = threads_text(row)
+    if threads:
+        lines.append(f"\n🧵 <b>Threads</b> ({len(threads)} из {THREADS_LIMIT} знаков):\n{e(threads)}")
+    notes = check_line(checks_json(row))
+    if notes:
+        lines.append(f"\n⚠️ {e(notes)}")
     m = media_json(row)
     meta = []
     if m.get("video"):
@@ -166,7 +178,9 @@ def format_card(row, tz: str = "Europe/Moscow") -> str:
         meta.append(f"⚠️ видео не собрано: {e(str(m['error'])[:120])}")
     if m.get("images"):
         n_img = len(m["images"])
-        meta.append("🖼 " + ("картинка ИИ" if m.get("ai_cover") else "обложка по шаблону" if n_img == 1 else f"{n_img} слайдов"))
+        meta.append("🖼 " + ("картинка ИИ" if m.get("ai_cover") else "обложка по шаблону" if n_img == 1 else f"{n_img} слайдов")
+                    + (" · 🎞 обложка с анимацией" if m.get("motion") else "")
+                    + (f" · {e(str(m['note'])[:200])}" if m.get("note") and not m.get("video") else ""))
     if row["scheduled_at"] and row["status"] == "scheduled":
         at = datetime.fromisoformat(row["scheduled_at"]).astimezone(ZoneInfo(tz))
         meta.append(f"🗓 {at:%d.%m %H:%M}")
@@ -517,6 +531,13 @@ def build_content_router(deps) -> Router:
             await m.answer(f"#{row['id']} уже не черновик ({STATUSES.get(row['status'], row['status'])}) — текст не меняю.")
             return
         new = m.text.strip()
+        if data.get("field") == "threads":
+            await f.edit_text(row["id"], threads_text=new)
+            saved = threads_text(await f.store.get(row["id"]))
+            await m.answer("Принял." if len(saved) >= len(new) else
+                           f"Принял, но сократил до {len(saved)} знаков: длиннее {THREADS_LIMIT} Threads не принимает.")
+            await deliver(await f.store.get(row["id"]), m.chat.id, m.message_thread_id)
+            return
         if row["kind"] == "post":
             await f.store.add_edit(row["id"], "post", row["body"] or "", new)
             await f.store.update(row["id"], body=new)
@@ -529,6 +550,7 @@ def build_content_router(deps) -> Router:
         else:
             await f.store.add_edit(row["id"], row["kind"], row["caption"] or "", new)
             await f.store.update(row["id"], caption=new)
+        await f.recheck(row["id"])
         await m.answer("Принял. Запомнил, как вы правите — дальше буду писать ближе к этому.")
         await deliver(await f.store.get(row["id"]), m.chat.id, m.message_thread_id)
 
@@ -683,7 +705,12 @@ def build_content_router(deps) -> Router:
             await cq.answer("Править можно только черновик", show_alert=True)
             return
         await state.set_state(ContentState.edit)
-        await state.update_data(item_id=row["id"])
+        if cq.data.endswith(":t"):
+            await state.update_data(item_id=row["id"], field="threads")
+            await cq.message.reply(f"Пришлите текст для Threads #{row['id']} одним сообщением — до {THREADS_LIMIT} знаков, без хэштегов.")
+            await cq.answer()
+            return
+        await state.update_data(item_id=row["id"], field="")
         what = "текст поста" if row["kind"] == "post" else "текст анонса" if row["kind"] == "magnet" else "подпись"
         await cq.message.reply(f"Пришлите исправленный {what} #{row['id']} одним сообщением — я заменю и запомню стиль правок.")
         await cq.answer()
@@ -727,14 +754,28 @@ def build_content_router(deps) -> Router:
         if video:
             await bot.send_document(chat_id, FSInputFile(video, filename=f"reel_{row['id']}.mp4"), message_thread_id=thread,
                                     caption="Видео без сжатия — для TikTok / Reels / Shorts")
+        motion = media_json(row).get("motion")
+        if motion and os.path.isfile(f.media.path(motion)):
+            await bot.send_document(chat_id, FSInputFile(f.media.path(motion), filename=f"cover_{row['id']}.mp4"),
+                                    message_thread_id=thread, caption="Обложка с анимацией — для Reels, Stories и Threads")
         for n, img in enumerate(images[:10], 1):
             await bot.send_document(chat_id, BufferedInputFile(img, f"slide_{row['id']}_{n}.png"), message_thread_id=thread)
         if row["kind"] == "magnet":
             await bot.send_document(chat_id, BufferedInputFile(f.magnet_text(row).encode(), f"magnet_{row['id']}.txt"),
                                     message_thread_id=thread, caption="Лид-магнит текстом")
         text = compose_text(row)
-        await bot.send_message(chat_id, f"Подпись:\n<code>{text}</code>", message_thread_id=thread)
-        await cq.answer("Отправил файлы и подпись")
+        threads = threads_text(row)
+        if threads:
+            # у площадок разные правила: Threads — коротко и без хэштегов, Instagram — подпись с хэштегами
+            await bot.send_message(chat_id, f"Текст для Threads ({len(threads)} знаков):\n<code>{html.escape(threads)}</code>",
+                                   message_thread_id=thread)
+            await bot.send_message(chat_id, f"Подпись для Instagram:\n<code>{text}</code>", message_thread_id=thread)
+        else:
+            await bot.send_message(chat_id, f"Подпись:\n<code>{text}</code>", message_thread_id=thread)
+        notes = check_line(checks_json(row))
+        if notes:
+            await bot.send_message(chat_id, f"⚠️ {html.escape(notes)}", message_thread_id=thread)
+        await cq.answer("Отправил файлы и тексты")
 
     @router.callback_query(F.data.startswith("ci:"))
     async def from_idea(cq: CallbackQuery):

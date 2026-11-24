@@ -63,6 +63,14 @@ class ContentStore:
         if "publish_errors" not in {r[1] for r in await cur.fetchall()}:
             # JSON [{platform, label, error}] — площадки, куда материал не ушёл при последней публикации
             await self.conn.execute("ALTER TABLE content_items ADD COLUMN publish_errors TEXT")
+        cur = await self.conn.execute("PRAGMA table_info(content_items)")
+        have = {r[1] for r in await cur.fetchall()}
+        if "threads_text" not in have:
+            # отдельная версия текста для Threads (до 500 знаков, без хэштегов)
+            await self.conn.execute("ALTER TABLE content_items ADD COLUMN threads_text TEXT")
+        if "checks" not in have:
+            # JSON-список: что владельцу проверить перед публикацией (цифры, которых нет в брифе)
+            await self.conn.execute("ALTER TABLE content_items ADD COLUMN checks TEXT")
         # идеи плана не публикуются сами: раньше им ставился статус scheduled
         await self.conn.execute("UPDATE content_items SET status = 'draft' WHERE kind = 'idea' AND status = 'scheduled'")
         await self.conn.commit()
@@ -109,7 +117,7 @@ class ContentStore:
             return
         if "hashtags" in fields and isinstance(fields["hashtags"], list):
             fields["hashtags"] = " ".join(fields["hashtags"])
-        for k in ("media", "published", "publish_errors"):
+        for k in ("media", "published", "publish_errors", "checks"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k], ensure_ascii=False)
         fields["updated_at"] = _now()
@@ -269,6 +277,23 @@ def errors_json(row) -> list[dict]:
     except (ValueError, TypeError):
         return []
     return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+
+
+def checks_json(row) -> list[str]:
+    """Что владельцу проверить перед публикацией: цифры, которых нет в брифе, «мы» вместо «я»."""
+    try:
+        data = json.loads(row["checks"] or "[]")
+    except (KeyError, IndexError, ValueError, TypeError):
+        return []
+    return [str(x) for x in data if isinstance(x, str) and x.strip()] if isinstance(data, list) else []
+
+
+def threads_text(row) -> str:
+    """Отдельный текст для Threads; у старых материалов его нет."""
+    try:
+        return str(row["threads_text"] or "")
+    except (KeyError, IndexError):
+        return ""
 
 
 def media_json(row) -> dict:

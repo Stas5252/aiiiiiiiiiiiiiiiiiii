@@ -470,13 +470,16 @@ class MiniAppAPI:
 
     def _content_row(self, r) -> dict:
         from ..content.factory import compose_text
-        from ..content.store import errors_json, media_json
+        from ..content.store import checks_json, errors_json, media_json, threads_text
 
         d = dict(r)
+        d["threads_text"] = threads_text(r)
+        d["checks"] = checks_json(r)
         media = media_json(r)
         store = self.factory.media
         d["images"] = [store.url(n) or f"/media/{n}" for n in media.get("images") or []]
         d["video"] = (store.url(media["video"]) or f"/media/{media['video']}") if media.get("video") else None
+        d["motion"] = (store.url(media["motion"]) or f"/media/{media['motion']}") if media.get("motion") else None
         # compose_text отдаёт HTML для Telegram; кабинету нужен обычный текст — экранирует он сам, один раз
         d["text"] = html.unescape(re.sub(r"<[^>]+>", "", compose_text(r)))
         d["published"] = json.loads(r["published"] or "[]")
@@ -577,10 +580,12 @@ class MiniAppAPI:
                 if isinstance(body.get(k), str):
                     await self.factory.store.add_edit(item_id, row["kind"], row[k] or "", body[k])
                     fields[k] = body[k]
+            if isinstance(body.get("threads_text"), str):
+                fields["threads_text"] = to_str(body["threads_text"], "threads_text", 2000)
             if "hashtags" in body:
                 tags = body["hashtags"]
                 fields["hashtags"] = to_str(tags, "hashtags", 500) if isinstance(tags, str) else to_str_list(tags, "hashtags", 30, 60)
-            await self.factory.store.update(item_id, **fields)
+            await self.factory.edit_text(item_id, **fields)
         else:
             raise bad("bad action")
         return web.json_response({"item": self._content_row(await self.factory.store.get(item_id))})

@@ -344,6 +344,10 @@ function contentRow(it) {
   /* площадки, куда публикация не ушла: причина и «Доотправить» (уйдёт только туда) */
   const failed = it.publish_errors || [];
   const fail = failed.length ? `<div class="c-fail"><b>Не ушло</b>${failed.map((f) => `<div><span class="c-fail-where">${esc(f.label || f.platform || "площадка")}</span> — ${esc(f.error || "ошибка")}</div>`).join("")}</div>` : "";
+  /* что проверить перед публикацией: цифры, которых нет в брифе; и отдельный текст для Threads */
+  const checks = (it.checks || []).length ? `<div class="c-fail c-check"><b>Проверьте перед публикацией</b><div>${esc(it.checks.join(", "))}</div><div class="hint">Этого нет в брифе — ИИ мог выдумать.</div></div>` : "";
+  const threads = it.threads_text ? `<div class="c-threads"><div class="c-threads-top"><b>Threads</b> · ${it.threads_text.length} из 500 знаков <button class="text" data-copy="${esc(it.threads_text)}">Скопировать</button></div><div class="c-threads-text">${esc(it.threads_text)}</div>
+    <div class="c-threads-top"><b>Instagram</b> <button class="text" data-copy="${esc(it.text || "")}">Скопировать подпись</button>${it.motion ? ` <a href="${esc(it.motion)}" target="_blank" rel="noopener">обложка с анимацией</a>` : ""}</div></div>` : "";
   const status = it.status === "published" && failed.length ? "вышло не везде" : CSTATUS[it.status] || it.status;
   const act = it.status === "published" ? (failed.length ? `<div class="c-actions"><button data-a="publish">Доотправить</button></div>` : "")
     : it.status === "rejected" || it.status === "publishing" ? "" : `<div class="c-actions">
@@ -355,7 +359,7 @@ function contentRow(it) {
     <div class="title">${esc(it.title || it.topic)}</div>
     <div class="sub">${esc((it.text || "").slice(0, 160))}</div>
     <div class="meta"><span>${KIND[it.kind] || it.kind}</span><span class="dot">${status}${when}</span>${links ? `<span class="dot">${links}</span>` : ""}${it.slug ? `<span class="dot"><a href="/lp/${encodeURIComponent(it.slug)}" target="_blank" rel="noopener">страница</a></span>` : ""}</div>
-    ${fail}${act}</div></div></div>`;
+    ${checks}${threads}${fail}${act}</div></div></div>`;
 }
 /* заявки со страниц лид-магнитов: видны все, даже если заявка не стала лидом */
 function renderLandingLeads(items) {
@@ -387,6 +391,7 @@ async function loadContent() {
         cact(id, { action: a });
       });
       $(".title", el).onclick = () => { const t = $(".sub", el); t.classList.toggle("full"); };
+      $$("[data-copy]", el).forEach((b) => b.onclick = async (ev) => { ev.stopPropagation(); try { await navigator.clipboard.writeText(b.dataset.copy); haptic.ok(); toast("Скопировано"); } catch { haptic.err(); toast("Не получилось скопировать — выделите текст руками"); } });
     });
   } catch (e) { $("#content-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }

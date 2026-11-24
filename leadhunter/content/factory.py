@@ -8,12 +8,13 @@ import time
 from dataclasses import dataclass
 
 from .. import brief, features
-from . import browser_render, design, shots
+from . import browser_render, design, facts, shots
 from .generator import NO_AI, ContentError, ContentGenerator, magnet_text
 from .images import MediaAI
 from .manual import MANUAL_HINT, manual_data
 from .media import MediaStore
-from .store import INTERRUPTED, STATUSES, ContentStore, body_json, errors_json, media_json
+from .render import plain
+from .store import INTERRUPTED, STATUSES, ContentStore, body_json, errors_json, media_json, threads_text
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +64,15 @@ def brand_from_setting(raw: str | None):
     return Brand(**{k: v for k, v in data.items() if k in Brand.__dataclass_fields__ and isinstance(v, str)})
 
 
-def compose_text(row) -> str:
-    """Итоговый текст публикации (HTML для Telegram; публикаторы других площадок снимают теги сами)."""
+TEXT_KINDS = ("post", "carousel", "reel")  # у этих форматов есть отдельная версия текста для Threads
+
+
+def compose_text(row, platform: str = "") -> str:
+    """Итоговый текст публикации (HTML для Telegram; публикаторы других площадок снимают теги сами).
+    Для Threads — своя короткая версия без хэштегов, если она есть."""
     e = html.escape
+    if platform == "threads" and threads_text(row):
+        return e(threads_text(row))
     tags = f"\n\n{e(row['hashtags'])}" if row["hashtags"] else ""
     if row["kind"] == "post":
         return e(row["body"] or "") + tags
@@ -188,35 +195,69 @@ class ContentFactory:
 
     async def save(self, kind: str, topic: str, data: dict, **kw) -> int:
         data = self.gen.clean(kind, data)  # и ответ ИИ, и ручной ввод: только ожидаемые типы, пустое — отказ
+        threads = data.pop("threads", "")
         if kind == "post":
             body = data["body"]
         else:
             body = json.dumps(data, ensure_ascii=False)
         # у лид-магнита анонс для соцсетей живёт в caption: его правит владелец и его же публикуем
         caption = data.get("post") or data.get("caption", "") if kind == "magnet" else data.get("caption", "")
-        return await self.store.add(kind, topic, title=data.get("title", "")[:200], body=body,
-                                    caption=caption, hashtags=data.get("hashtags") or [],
-                                    image_prompt=data.get("image_prompt", ""), **kw)
+        item_id = await self.store.add(kind, topic, title=data.get("title", "")[:200], body=body,
+                                       caption=caption, hashtags=data.get("hashtags") or [],
+                                       image_prompt=data.get("image_prompt", ""), **kw)
+        if kind in TEXT_KINDS:
+            # ИИ не дал версию для Threads (или материал набран руками) — берём основной текст и ужимаем до лимита
+            await self.store.update(item_id, threads_text=facts.fit_threads(threads or (body if kind == "post" else caption)))
+        await self.recheck(item_id)
+        return item_id
+
+    async def recheck(self, item_id: int) -> list[str]:
+        """Сверяет тексты материала с брифом и запоминает, что владельцу проверить: цифры, которых в брифе нет,
+        и «мы» там, где исполнитель работает один. Вызывается после создания и после каждой правки текста."""
+        row = await self.store.get(item_id)
+        if not row or row["kind"] == "idea":
+            return []
+        data = await brief.load(self.db)
+        source = await brief.profile(self.db, self.gen.default_profile)
+        texts = [row["title"] or "", row["caption"] or "", threads_text(row)]
+        texts += [row["body"] or ""] if row["kind"] == "post" else facts.strings(body_json(row))
+        notes = facts.check(texts, source, data.get("who") or "")
+        await self.store.update(item_id, checks=notes)
+        return notes
 
     async def replace_data(self, item_id: int, data: dict) -> None:
         row = await self.store.get(item_id)
         data = self.gen.clean(row["kind"], data)
+        threads = data.pop("threads", "")
         body = data["body"] if row["kind"] == "post" else json.dumps(data, ensure_ascii=False)
         caption = data.get("caption") or row["caption"] or ""
         if row["kind"] == "magnet":
             caption = data.get("post") or caption
+        fields = {}
+        if row["kind"] in TEXT_KINDS:
+            fields["threads_text"] = facts.fit_threads(threads or (body if row["kind"] == "post" else caption))
         await self.store.update(item_id, title=(data.get("title") or row["title"] or "")[:200], body=body,
                                 caption=caption,
                                 hashtags=data.get("hashtags") if data.get("hashtags") is not None else row["hashtags"],
-                                image_prompt=data.get("image_prompt", row["image_prompt"] or ""))
+                                image_prompt=data.get("image_prompt", row["image_prompt"] or ""), **fields)
+        await self.recheck(item_id)
         await self.render(item_id)
+
+    async def edit_text(self, item_id: int, **fields) -> None:
+        """Правка текста владельцем: текст для Threads ужимается до лимита площадки, материал заново сверяется с брифом."""
+        if "threads_text" in fields:
+            fields["threads_text"] = facts.fit_threads(fields["threads_text"])
+        await self.store.update(item_id, **fields)
+        await self.recheck(item_id)
 
     def data_of(self, row) -> dict:
         if row["kind"] == "post":
-            return {"title": row["title"] or "", "body": row["body"] or "", "hashtags": (row["hashtags"] or "").split(),
-                    "image_prompt": row["image_prompt"] or ""}
+            return {"title": row["title"] or "", "body": row["body"] or "", "threads": threads_text(row),
+                    "hashtags": (row["hashtags"] or "").split(), "image_prompt": row["image_prompt"] or ""}
         data = body_json(row)
-        return data if isinstance(data, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        # версию для Threads ИИ переписывает вместе с материалом
+        return {**data, "threads": threads_text(row)} if row["kind"] in TEXT_KINDS else data
 
     # --- медиа ---
     async def render(self, item_id: int, *, ai_image: bool = True) -> dict:
@@ -421,7 +462,6 @@ class ContentFactory:
                 errors.append(problem)
                 finished = True
                 return Outcome(results, errors)
-            text = compose_text(row)
             images, video = self.files(row)
             wanted = platforms or [p.strip() for p in (row["platforms"] or "").split(",") if p.strip()] or None
             sent = {p.get("platform") for p in done}
@@ -436,7 +476,7 @@ class ContentFactory:
                     continue
                 try:
                     with self.media.temporary():
-                        res = await asyncio.wait_for(pub.publish(text, images, video), timeout=300)
+                        res = await asyncio.wait_for(pub.publish(compose_text(row, pub.platform), images, video), timeout=300)
                 except Exception as e:
                     why = error_text(e)
                     errors.append(f"{pub.label}: {why}")
