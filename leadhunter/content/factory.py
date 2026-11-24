@@ -155,6 +155,9 @@ class ContentFactory:
         from .render import render_carousel, render_cover, same_line
 
         row = await self.store.get(item_id)
+        if row["kind"] == "aivideo" and not await features.enabled(self.db, "format_aivideo"):
+            # старый черновик при выключенном ИИ-видео: платных запросов не делаем, готовое видео не трогаем
+            return {**media_json(row), "error": "ИИ-видео выключено в настройках — включите его в кабинете, чтобы пересобрать"}
         brand = await self.brand()
         data = self.data_of(row)
         media: dict = {}
@@ -179,9 +182,6 @@ class ContentFactory:
             except Exception as e:
                 log.warning("мультик не собрался: %s", e)
                 media["error"] = error_text(e, 300)
-        elif row["kind"] == "aivideo" and not await features.enabled(self.db, "format_aivideo"):
-            # старый черновик при выключенном ИИ-видео: пересборка не должна тратить платные запросы
-            media["error"] = "ИИ-видео выключено в настройках — включите его в кабинете, чтобы пересобрать"
         elif row["kind"] == "aivideo":
             voice = _Voice(self.ai)
             try:

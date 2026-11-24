@@ -9,7 +9,7 @@ from leadhunter import features
 from leadhunter.bot.content import CONTENT_HELP
 from leadhunter.bot.handlers import HELP
 from leadhunter.content.generator import ContentGenerator
-from leadhunter.content.store import ContentStore
+from leadhunter.content.store import ContentStore, media_json
 from leadhunter.db import Database
 from leadhunter.miniapp import server as miniapp_server
 
@@ -158,8 +158,13 @@ async def test_rebuild_of_old_ai_video_draft_sends_no_paid_requests(tmp_path):
     try:
         w.factory.video_ai = VideoAI()
         item_id = await w.factory.store.add("aivideo", "тема", body=json.dumps({"title": "т", "clips": [{"prompt": "кот", "line": "мяу"}]}))
+        name = w.factory.media.save(b"mp4", ".mp4")
+        await w.factory.store.update(item_id, media={"video": name})
         media = await w.factory.render(item_id)
         assert "выключено" in media["error"] and w.factory.video_ai.calls == 0
+        # готовое видео черновика остаётся на месте — его по-прежнему можно опубликовать
+        assert media_json(await w.factory.store.get(item_id)) == {"video": name}
+        assert w.factory.files(await w.factory.store.get(item_id))[1]
     finally:
         await w.client.close()
         await w.db.close()
