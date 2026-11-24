@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .. import brief
 
 log = logging.getLogger(__name__)
-PRIVATE_ONLY = "Бриф заполняется в личке с ботом — напишите мне /brief там."
+PRIVATE_ONLY = "Бриф показываю и заполняю только в личке — напишите мне /brief там."
 OWNER_ONLY = "Только владелец"
 
 
@@ -75,10 +75,12 @@ def build_brief_router(deps) -> Router:
         return None
 
     async def show_summary(m: Message, *, saved: bool = False) -> None:
+        if m.chat.type != "private":  # в группе ответ видят все её участники, а в брифе цены и клиенты
+            await m.answer(PRIVATE_ONLY)
+            return
         data = await brief.load(db)
-        owner = await deps.guard.is_owner(m.chat.id) if m.chat.type == "private" else False
         await m.answer(summary_text(data, saved=saved),
-                       reply_markup=summary_keyboard(data, bool(deps.llm)) if owner else None)
+                       reply_markup=summary_keyboard(data, bool(deps.llm)) if await deps.guard.is_owner(m.chat.id) else None)
 
     async def ask(m: Message, state: FSMContext, key: str, chain: bool) -> None:
         f = brief.BY_KEY[key]
@@ -106,8 +108,6 @@ def build_brief_router(deps) -> Router:
             return
         await state.clear()
         await show_summary(m)
-        if await deps.guard.is_owner(m.from_user.id) and m.chat.type != "private":
-            await m.answer(PRIVATE_ONLY)
 
     @router.callback_query(F.data == "ob:brief")
     async def ob_brief(cq: CallbackQuery, state: FSMContext):

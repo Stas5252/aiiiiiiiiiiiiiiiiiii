@@ -445,11 +445,22 @@ async def test_bot_brief_is_edited_only_by_owner_in_private_chat(env):
     await env.db.set_setting("workspace_chat_id", str(GROUP))
     await env.db.add_member(777, "Маша")
     assert await env.press("br:e:who", 777) == ["Только владелец"]
-    assert "Бриф заполняется в личке" in "".join(await env.press("br:e:who", chat_id=GROUP))
+    assert "только в личке" in "".join(await env.press("br:e:who", chat_id=GROUP))
     said = await env.say("/brief", 777)  # участник видит бриф без кнопок правки
     assert "заполнено 0 из 11" in said and buttons(env) == []
     assert "Нет такого поля" in "".join(await env.press("br:e:nope"))
     assert brief.filled(await brief.load(env.db)) == 0
+
+
+async def test_bot_never_shows_brief_in_a_group(env):
+    await brief.save(env.db, FILLED)
+    await env.db.set_setting("workspace_chat_id", str(GROUP))
+    for chat in (GROUP, -1009999999999):  # рабочая группа и посторонняя
+        said = await env.say("/brief", chat_id=chat)
+        assert "только в личке" in said and "Лендинг" not in said and "Стас" not in said and buttons(env) == [], chat
+        await env.tap("ob:brief", chat_id=chat)
+        assert "только в личке" in env.said() and "Лендинг" not in env.said(), chat
+    assert "Лендинг от 25 000" in await env.say("/brief")
 
 
 async def test_bot_fill_for_me_saves_only_after_confirmation(env):
