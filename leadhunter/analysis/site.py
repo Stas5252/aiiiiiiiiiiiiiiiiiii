@@ -2,7 +2,7 @@
 import html
 import re
 from datetime import datetime
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from ..audit import PARKED_RE, VIEWPORT_RE
 from ..extract import EMAIL_RE, PHONE_RE
@@ -145,10 +145,11 @@ def robots_allows(robots: str, url: str) -> bool:
     """Как у поисковиков: побеждает самое длинное подходящее правило, при равной длине — разрешающее.
     Стандартный разборщик Python не понимает «*» и «$» и берёт первое подходящее правило, а не самое точное."""
     parts = urlsplit(url)
-    path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    # «/каталог/» в правиле и «/%D0%BA%D0%B0…» в ссылке — один и тот же путь: сравниваем раскодированные
+    path = unquote((parts.path or "/") + (f"?{parts.query}" if parts.query else ""))
     best_len, allowed = -1, True
     for allow, pattern in robots_rules(robots):
-        if _rule_matches(pattern, path) and (len(pattern) > best_len or (len(pattern) == best_len and allow)):
+        if _rule_matches(unquote(pattern), path) and (len(pattern) > best_len or (len(pattern) == best_len and allow)):
             best_len, allowed = len(pattern), allow
     return allowed
 

@@ -185,6 +185,9 @@ async def test_site_closed_in_robots_is_not_read_and_reported():
     ("User-agent: Googlebot\nUser-agent: *\nDisallow: /\n", "https://x.ru/", False),  # одна группа на двух роботов
     ("User-agent: *\nDisallow: /\n\nUser-agent: LeadHunterBot\nAllow: /\n", "https://x.ru/", True),
     ("", "https://x.ru/", True),
+    ("User-agent: *\nDisallow: /каталог/\n", "https://x.ru/%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/1", False),
+    ("User-agent: *\nDisallow: /%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/\n", "https://x.ru/каталог/1", False),
+    ("User-agent: *\nDisallow: /каталог/\n", "https://x.ru/%D1%86%D0%B5%D0%BD%D1%8B", True),
 ])
 def test_robots_rules_are_read_like_search_engines_do(robots, url, allowed):
     assert robots_allows(robots, url) is allowed
