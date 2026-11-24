@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 
+from .. import features
 from ..db import Database
 from ..filters import parse_rule
 from ..models import Lead
@@ -26,6 +27,8 @@ OPEN_STATUSES = ("new", "hot", "taken", "contacted", "replied")
 FLAGS = ("paused", "autopilot", "leads_boards", "leads_social", "leads_jobs", "leads_maps", "leads_web", "format_post",
          "format_carousel", "format_reel", "format_toon", "format_aivideo", "format_ideas", "format_magnet",
          "publish_telegram", "publish_instagram", "publish_threads", "publish_vk", "publish_youtube", "schedule_enabled")
+# Что можно создать из кабинета; выключенные в настройках форматы в список не попадают
+CREATE_KINDS = ("post", "carousel", "reel", "magnet")
 # Как и в боте: состав команды, каналы публикации и пауза — решения владельца
 OWNER_ONLY = ("team_remove", "channels", "paused")
 DEV_HOSTS = ("localhost", "127.0.0.1", "::1")
@@ -221,24 +224,7 @@ class MiniAppAPI:
             "threshold": await self.db.get_setting("threshold", str(self.deps.extra.get("threshold", 5))),
             "profile": await self.db.get_setting("profile") or self.deps.default_profile,
             "geo": await self.db.get_setting("geo", ""),
-            "format_post": await self.db.get_setting("format_post", "1") == "1",
-            "format_carousel": await self.db.get_setting("format_carousel", "1") == "1",
-            "format_reel": await self.db.get_setting("format_reel", "1") == "1",
-            "format_toon": await self.db.get_setting("format_toon", "1") == "1",
-            "format_aivideo": await self.db.get_setting("format_aivideo", "1") == "1",
-            "format_ideas": await self.db.get_setting("format_ideas", "1") == "1",
-            "format_magnet": await self.db.get_setting("format_magnet", "1") == "1",
-            "publish_telegram": await self.db.get_setting("publish_telegram", "1") == "1",
-            "publish_instagram": await self.db.get_setting("publish_instagram", "1") == "1",
-            "publish_threads": await self.db.get_setting("publish_threads", "1") == "1",
-            "publish_vk": await self.db.get_setting("publish_vk", "1") == "1",
-            "publish_youtube": await self.db.get_setting("publish_youtube", "1") == "1",
-            "schedule_enabled": await self.db.get_setting("schedule_enabled", "1") == "1",
-            "leads_boards": await self.db.get_setting("leads_boards", "1") == "1",
-            "leads_social": await self.db.get_setting("leads_social", "1") == "1",
-            "leads_jobs": await self.db.get_setting("leads_jobs", "0") == "1",
-            "leads_maps": await self.db.get_setting("leads_maps", "1") == "1",
-            "leads_web": await self.db.get_setting("leads_web", "0") == "1",
+            **{key: await features.enabled(self.db, key) for key in FLAGS if key not in ("paused", "autopilot")},
             "paused": (await self.db.get_setting("paused")) == "1",
             "phrases": await self.deps.phrases.get(),
             "rules": [dict(r) for r in await self.db.rules()],
@@ -446,8 +432,10 @@ class MiniAppAPI:
         user = await self.user(request)
         body = await json_object(request)
         kind, topic = body.get("kind", "post"), to_str(body.get("topic") or "", "topic", 2000)
-        if kind not in ("post", "carousel", "reel", "magnet") or not topic:
+        if kind not in CREATE_KINDS or not topic:
             raise bad("нужны kind и topic")
+        if not await features.enabled(self.db, "format_" + kind):
+            raise bad("Этот формат выключен в настройках контента")
         factory, data = self.factory, None
         gen = getattr(factory, "gen", None)
         if gen is not None and not gen.available:
@@ -520,7 +508,8 @@ class MiniAppAPI:
     async def content_channels(self, request):
         await self.user(request)
         pubs = await self.deps.extra["publishers"]() if self.deps.extra.get("publishers") else []
-        return web.json_response({"channels": [{"platform": p.platform, "label": p.label} for p in pubs]})
+        formats = [k for k in CREATE_KINDS if await features.enabled(self.db, "format_" + k)]
+        return web.json_response({"channels": [{"platform": p.platform, "label": p.label} for p in pubs], "formats": formats})
 
     # --- публичный лендинг лид-магнита: заявка превращается в горячий лид ---
     async def landing(self, request):

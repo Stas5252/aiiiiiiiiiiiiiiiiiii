@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from .. import features
 from .generator import NO_AI, ContentError, ContentGenerator, magnet_text
 from .images import MediaAI
 from .manual import MANUAL_HINT, manual_data
@@ -104,7 +105,7 @@ class ContentFactory:
     # --- создание ---
     async def create(self, kind: str, topic: str, *, created_by: str = "", lead_id: int | None = None,
                      parent_id: int | None = None, data: dict | None = None):
-        if await self.db.get_setting("format_" + kind, "1") == "0":
+        if not await features.enabled(self.db, "format_" + kind):
             raise ValueError("Этот формат выключен в настройках контента")
         if not data and not self.gen.available:
             # без ИИ: «Заголовок | слайд | слайд» — так же, как в боте, работает и из кабинета
@@ -154,6 +155,9 @@ class ContentFactory:
         from .render import render_carousel, render_cover, same_line
 
         row = await self.store.get(item_id)
+        if row["kind"] == "aivideo" and not await features.enabled(self.db, "format_aivideo"):
+            # старый черновик при выключенном ИИ-видео: платных запросов не делаем, готовое видео не трогаем
+            return {**media_json(row), "error": "ИИ-видео выключено в настройках — включите его в кабинете, чтобы пересобрать"}
         brand = await self.brand()
         data = self.data_of(row)
         media: dict = {}
@@ -333,7 +337,7 @@ class ContentFactory:
             for pub in publishers:
                 if (wanted and pub.platform not in wanted) or pub.platform in sent or (only is not None and pub.platform not in only):
                     continue
-                if await self.db.get_setting("publish_" + pub.platform, "1") == "0":
+                if not await features.enabled(self.db, "publish_" + pub.platform):
                     errors.append(f"{pub.label}: публикация выключена в настройках")
                     continue
                 try:

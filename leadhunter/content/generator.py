@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from .. import features
 from ..db import Database
 from ..llm import LLMClassifier
 from .store import ContentStore
@@ -20,6 +21,7 @@ SYSTEM = """Ты — контент-маркетолог студии. Пише�
 {voice}{examples}{edits}{pains}
 Ответ — строго JSON по схеме, без пояснений."""
 
+IDEA_KINDS = ("post", "carousel", "reel", "toon", "magnet")
 SCHEMAS = {
     "post": """Напиши пост для соцсетей{platform} на тему: «{topic}».
 Структура: цепляющая первая строка (хук), 3–6 коротких абзацев, в конце мягкий призыв написать в личку / оставить заявку.
@@ -44,8 +46,8 @@ JSON: {{"title": "название лид-магнита (до 60 знаков)"
 "post": "анонс лид-магнита для соцсетей 400–700 знаков: боль → что внутри → как получить (написать слово в личку / ссылка)",
 "hashtags": ["#тег", ...], "image_prompt": "обложка на английском, без текста"}}""",
     "ideas": """Предложи {n} идей для контента студии на ближайшую неделю. Опирайся на боли клиентов ниже, если они есть:
-каждая идея должна отвечать на реальный вопрос или возражение клиента. Чередуй форматы: post, carousel, reel, toon, magnet.
-JSON: {{"ideas": [{{"topic": "тема в 5–10 словах", "kind": "post|carousel|reel|toon|magnet", "hook": "первая фраза, которая цепляет",
+каждая идея должна отвечать на реальный вопрос или возражение клиента. Чередуй форматы: {kinds}.
+JSON: {{"ideas": [{{"topic": "тема в 5–10 словах", "kind": "{kinds_alt}", "hook": "первая фраза, которая цепляет",
 "why": "почему это сработает, 1 предложение"}}, ...]}}""",
     "toon": """Напиши сценарий короткого вертикального мультика (20–40 секунд) на тему: «{topic}».
 Это 2D-мультик с простыми персонажами, который рендерится кодом: 2–3 персонажа, 5–9 сцен, диалог живой и смешной, с конфликтом и развязкой,
@@ -184,18 +186,29 @@ class ContentGenerator:
         return SYSTEM.format(profile=profile, voice=voice, examples=examples, edits=edits_txt, pains=pains_txt)
 
     async def generate(self, kind: str, topic: str, *, platform: str = "", n: int = 7) -> dict:
-        if await self.db.get_setting("format_" + kind, "1") == "0":
+        if not await features.enabled(self.db, "format_" + kind):
             raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
             raise ContentError(NO_AI)
         if kind not in SCHEMAS:
             raise ValueError(f"неизвестный формат {kind}")
         system = await self._system(kind)
-        user = SCHEMAS[kind].format(topic=topic, n=n, platform=f" для {platform}" if platform else "")
-        return await self._ask(kind, system, user, 0.8)
+        kinds = await self.idea_kinds() if kind == "ideas" else []
+        user = SCHEMAS[kind].format(topic=topic, n=n, platform=f" для {platform}" if platform else "",
+                                    kinds=", ".join(kinds), kinds_alt="|".join(kinds))
+        data = await self._ask(kind, system, user, 0.8)
+        for idea in data.get("ideas", []) if kind == "ideas" else []:
+            if idea["kind"] not in kinds:
+                idea["kind"] = kinds[0]  # ИИ предложил выключенный формат
+        return data
+
+    async def idea_kinds(self) -> list[str]:
+        """Форматы, которые можно предлагать в идеях: только включённые в настройках."""
+        on = [k for k in IDEA_KINDS if await features.enabled(self.db, "format_" + k)]
+        return on or ["post"]
 
     async def rewrite(self, kind: str, data: dict, instruction: str) -> dict:
-        if await self.db.get_setting("format_" + kind, "1") == "0":
+        if not await features.enabled(self.db, "format_" + kind):
             raise ValueError("Этот формат выключен в настройках контента")
         if not self.llm:
             raise ContentError(NO_AI)
@@ -276,7 +289,7 @@ class ContentGenerator:
                 if not isinstance(i, dict) or not _s(i.get("topic")):
                     continue
                 ideas.append({**i, "topic": _s(i.get("topic")), "hook": _s(i.get("hook")), "why": _s(i.get("why")),
-                              "kind": i.get("kind") if i.get("kind") in ("post", "carousel", "reel", "toon", "magnet") else "post"})
+                              "kind": i.get("kind") if i.get("kind") in IDEA_KINDS else "post"})
             data["ideas"] = ideas
             if not ideas:
                 raise ContentError("ИИ не предложил ни одной идеи. Попробуйте ещё раз.")

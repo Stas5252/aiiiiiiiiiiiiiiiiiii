@@ -19,23 +19,26 @@ from ..content.manual import MANUAL_HINT, manual_data
 from ..content.publish import truncate_html
 from ..content.render import valid_color
 from ..content.store import KINDS, STATUSES, body_json, errors_json, media_json
+from .. import features
 from .guard import Guard
 
 log = logging.getLogger(__name__)
 
 CONTENT_HELP = """<b>Контент-фабрика</b> — ИИ пишет под ваш профиль и учится на ваших правках.
 
-/post тема · /carousel тема · /reel тема · /magnet тема — сделать пост / карусель / короткое видео / лид-магнит
-/toon тема — мультик с персонажами, рендерится кодом (без нейросети) · /aivideo тема — ИИ-мультик нейросетью Gemini (платно ≈ 0,07 $/сек, биллинг в AI Studio)
+/post тема · /carousel тема · /reel тема — сделать пост / карусель / короткое видео
 /ideas [N] — идеи из реальных запросов клиентов · /plan — план на неделю (с автопилотом сам предложит черновики)
 /publish текст — опубликовать свой текст (обложка подставится)
 /queue — очередь · /schedule id ГГГГ-ММ-ДД ЧЧ:ММ — точное время · /content — статистика
 
-<b>Куда публиковать</b>: /channels · /channel_set telegram @канал · /channel_set vk -123456 · /channel_del vk
-Threads / Instagram / YouTube — ключи через /setup. TikTok и остальное — кнопка «📦 Пакет»: видео + подпись, выкладываете за минуту.
+<b>Куда публиковать</b>: /channels · /channel_set telegram @канал · /channel_del telegram
+Threads / Instagram — ключи через /setup. TikTok и остальное — кнопка «📦 Пакет»: видео + подпись, выкладываете за минуту.
 
 <b>Стиль</b>: /voice как писать (тон голоса) · /brand Студия | @handle | #141420 | #7C5CFF — подпись и цвета слайдов
-/autopilot on|off — каждый день в заданный час бот сам приносит черновик по плану"""
+/autopilot on|off — каждый день в заданный час бот сам приносит черновик по плану
+
+""" + features.EXTRA_HINT
+
 
 
 class ContentState(StatesGroup):
@@ -302,6 +305,7 @@ def build_content_router(deps) -> Router:
             return
         tz = ZoneInfo(deps.tz)
         hour = deps.extra.get("content_hour", 10)
+        magnet_on = await features.enabled(db, "format_magnet")
         lines, rows = ["💡 <b>Идеи</b>" + (" — план на неделю" if is_plan else "") + ":"], []
         for d, idea in enumerate(data["ideas"]):
             when = None
@@ -314,8 +318,8 @@ def build_content_router(deps) -> Router:
                          + (f" · {when:%a %d.%m}" if when else "") + f"\n{html.escape(idea.get('hook', ''))}")
             rows.append([InlineKeyboardButton(text=f"{d + 1} ✍️", callback_data=f"ci:{item_id}:post"),
                          InlineKeyboardButton(text="🎠", callback_data=f"ci:{item_id}:carousel"),
-                         InlineKeyboardButton(text="🎬", callback_data=f"ci:{item_id}:reel"),
-                         InlineKeyboardButton(text="🧲", callback_data=f"ci:{item_id}:magnet")])
+                         InlineKeyboardButton(text="🎬", callback_data=f"ci:{item_id}:reel")]
+                        + ([InlineKeyboardButton(text="🧲", callback_data=f"ci:{item_id}:magnet")] if magnet_on else []))
         tail = ("\n\nАвтопилот сам сделает черновик каждой идеи в её день (/autopilot on). Или нажмите формат сейчас."
                 if is_plan else "\n\nНажмите формат — сделаю сразу.")
         await wait.edit_text("\n".join(lines)[:3900] + tail, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -404,7 +408,7 @@ def build_content_router(deps) -> Router:
         for p in pubs:
             lines.append(f"✅ {html.escape(p.label)}")
         for key, name in API_PLATFORMS.items():
-            if not any(p.platform == key for p in pubs):
+            if not any(p.platform == key for p in pubs) and await features.enabled(db, "publish_" + key):
                 hint = {"telegram": "добавьте бота админом канала → /channel_set telegram @канал",
                         "vk": "токен VK в /setup → /channel_set vk -id_группы",
                         "threads": "токен и ID в /setup",

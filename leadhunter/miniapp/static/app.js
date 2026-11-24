@@ -323,6 +323,8 @@ async function loadContent() {
     const [{ items }, ch, ll] = await Promise.all([api("/api/content?" + new URLSearchParams({ status: C.status })), api("/api/content/channels").catch(() => ({ channels: [] })),
       api("/api/landing-leads?limit=20").catch(() => ({ items: [] }))]);
     renderLandingLeads(ll.items);
+    // выключенные форматы в списке «что создать» не показываем
+    if (ch.formats) { $$("#c-kind option").forEach((o) => { o.hidden = o.disabled = !ch.formats.includes(o.value); }); if ($("#c-kind").selectedOptions[0]?.disabled) $("#c-kind").value = ch.formats[0] || "post"; }
     $("#c-channels").textContent = ch.channels.length ? "→ " + ch.channels.map((c) => c.label).join(", ") : "площадки: /channels в боте";
     const list = $("#content-list");
     list.innerHTML = items.map(contentRow).join("") || `<div class="empty">Пока пусто — напишите тему выше или /post в боте</div>`;
@@ -349,7 +351,7 @@ function autosave(patch) {
   saveT = setTimeout(async () => { const body = pendingPatch; pendingPatch = {}; try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(body) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500);
 }
 $$(".stepper button[data-step]").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
-$$("[data-feature]").forEach(el => el.onchange = () => autosave({ [el.dataset.feature]: el.checked }));
+$$("[data-feature]").forEach(el => el.onchange = () => { autosave({ [el.dataset.feature]: el.checked }); if (el.dataset.feature === "publish_vk") $("#row-ch-vk").classList.toggle("hidden", !el.checked); });
 $("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
 $("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
 $("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
@@ -357,6 +359,7 @@ function tag(text, onDel, cls = "") { const el = document.createElement("span");
 function renderSettings(s) {
   S = s;
   $$("[data-feature]").forEach(el => el.checked = s[el.dataset.feature]);
+  $("#row-ch-vk").classList.toggle("hidden", !s.publish_vk);
   const owner = Boolean(me?.is_owner);
   $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
   // пауза, каналы и состав команды — только владелец (сервер проверяет то же самое)
