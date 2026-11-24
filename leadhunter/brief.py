@@ -115,7 +115,7 @@ def min_budget(data: dict) -> int:
 
 def text(data: dict, fallback: str = "", *, with_min: bool = True) -> str:
     """Бриф одним текстом для ИИ. Услуги не заполнены — вместо них старое описание «что продаём».
-    with_min=False — без минимального заказа: так ИИ оценивает заказ, который владелец взял своим правилом."""
+    with_min=False — без минимального заказа: при оценке лида с минимумом сравнивает программа, а не ИИ."""
     if not with_min:
         data = {**data, "min_budget": ""}
     if not filled(data):

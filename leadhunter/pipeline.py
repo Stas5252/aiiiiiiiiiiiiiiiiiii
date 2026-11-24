@@ -224,8 +224,8 @@ class Pipeline:
                 bio = await self.author_bio(int(lead.extra["sender_id"]))
             except Exception:
                 log.debug("bio fetch failed", exc_info=True)
-        # Правило владельца сильнее минимального заказа из брифа: такому заказу ИИ минимум не показываем
-        profile = await brief.profile(self.db, self.default_profile, with_min=not rule)
+        # Минимальный заказ ИИ не показываем: он называет сумму заказа, а с минимумом её сравниваем мы
+        profile = await brief.profile(self.db, self.default_profile, with_min=False)
         good = [r["text"] for r in await self.db.leads_by_status("hot", 5)]
         bad = [r["text"] for r in await self.db.leads_by_status("spam", 5)]
         text = lead.full_text + (f"\n\n[Об авторе: {bio}]" if bio else "")
@@ -236,7 +236,13 @@ class Pipeline:
             return Enriched(base, res, service=service, budget=budget, rule=rule or "", author_bio=bio,
                             draft=await self._template(service))
         if not verdict.is_lead:
-            log.info("LLM отклонил %s/%s: %s", lead.source, lead.external_id, verdict.summary)
+            log.info("LLM отклонил %s/%s: %s", lead.source, lead.external_id, verdict.why or verdict.summary)
+            return None
+        # Сумму, которую не разобрать без ИИ («тысячи три», «10к»), он назвал числом. Правило владельца сильнее.
+        low = brief.min_budget(await brief.load(self.db))
+        if not rule and low and verdict.budget_rub is not None and verdict.budget_rub < low:
+            log.info("%s/%s пропущен: бюджет %s ₽ ниже минимального %s ₽", lead.source, lead.external_id,
+                     verdict.budget_rub, low)
             return None
         return Enriched(verdict.score, res, summary=verdict.summary, service=verdict.service or service,
                         budget=verdict.budget or budget, urgency=verdict.urgency, draft=verdict.reply_draft,
