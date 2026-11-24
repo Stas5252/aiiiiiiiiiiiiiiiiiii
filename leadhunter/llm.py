@@ -70,7 +70,8 @@ def parse_rub(value) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, str):
-        text = re.sub(r"(\d)[.,]0+\b", r"\1", value.lower())  # «15000.0» — это 15000
+        text = re.sub(r"(?<=\d)[.,](?=\d{3}(?!\d))", "", value.lower())  # «8,000» и «1.500.000» — разделители тысяч
+        text = re.sub(r"(\d)[.,]0{1,2}(?!\d)", r"\1", text)  # «15000.0» — это 15000
         numbers = [re.sub(r"\D", "", n) for n in re.findall(r"\d[\d\s\u00a0]*", text)]
         rest = re.sub(r"\d", " ", text)
         if re.search(r"\bдо\b", rest):  # «от 5 000 до 8 000 ₽» — потолок назван, «от» здесь не мешает
