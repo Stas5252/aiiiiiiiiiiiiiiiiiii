@@ -9,7 +9,7 @@ from leadhunter import brief
 from leadhunter.bot.notify import format_lead
 from leadhunter.db import Database
 from leadhunter.extract import budget_rub
-from leadhunter.llm import LLMClassifier, Verdict
+from leadhunter.llm import LLMClassifier, Verdict, parse_rub
 from leadhunter.models import Lead
 from leadhunter.pipeline import Enriched, Pipeline
 from leadhunter.scoring import ScoreResult
@@ -180,24 +180,82 @@ async def test_owner_rule_beats_minimum_budget(db):
     assert await Pipeline(db, notifier, default_threshold=1).handle(lead("Нужна визитка для мастера, бюджет 3000 руб"))
 
 
-async def test_ai_is_not_told_the_minimum_for_order_matched_by_owner_rule(db):
-    class Strict(FakeLLM):
-        """Как настоящий ИИ: отклоняет заказ дешевле минимального, если минимум есть в брифе."""
+class BudgetLLM(FakeLLM):
+    """Как настоящий ИИ: называет сумму заказа числом, а лид это или нет — решает только по теме."""
 
-        async def classify(self, text, profile, good=(), bad=()):
-            verdict = await super().classify(text, profile, good, bad)
-            verdict.is_lead = "Минимальный заказ" not in profile
-            return verdict
+    def __init__(self, rub):
+        super().__init__()
+        self.rub = rub
 
-    notifier, llm = Notifier(), Strict()
+    async def classify(self, text, profile, good=(), bad=()):
+        verdict = await super().classify(text, profile, good, bad)
+        verdict.budget_rub = self.rub
+        return verdict
+
+
+async def test_minimum_is_compared_by_program_with_the_sum_named_by_ai(db):
+    await brief.save(db, FILLED)
+    notifier, cheap = Notifier(), BudgetLLM(3000)
+    p = Pipeline(db, notifier, llm=cheap, default_threshold=1)
+    # «тысячи три» числом не разобрать — сумму называет ИИ, с минимумом 10 000 ₽ её сравнивает программа
+    assert not await p.handle(lead("Нужен сайт для кафе, бюджет небольшой, тысячи три", "1"))
+    # сам минимум ИИ не видит: иначе он отклоняет заказы по своему разумению, а не по брифу
+    assert "Минимальный заказ" not in cheap.profiles[0] and "Кейсы: Сайт стоматологии" in cheap.profiles[0]
+    for ext, rub, text in (("2", 15000, "Нужен интернет-магазин одежды, бюджет тысяч пятнадцать"),
+                           ("3", 10000, "Ищу кто сделает сайт-визитку автосервису, бюджет десятка"),
+                           ("4", None, "Сделать квиз на сайт стоматологии, бюджет обсудим")):
+        assert await Pipeline(db, notifier, llm=BudgetLLM(rub), default_threshold=1).handle(lead(text, ext))
+    assert len(notifier.sent) == 3
+
+
+async def test_sum_named_by_ai_does_not_filter_without_minimum_in_brief(db):
+    notifier = Notifier()
+    await brief.save(db, {**FILLED, "min_budget": "0"})
+    assert await Pipeline(db, notifier, llm=BudgetLLM(500), default_threshold=1).handle(
+        lead("Нужен сайт для кафе, бюджет небольшой", "1"))
+
+
+async def test_owner_rule_beats_minimum_checked_after_ai(db):
+    notifier, llm = Notifier(), BudgetLLM(3000)
     await brief.save(db, FILLED)
     await db.add_rule("+визитка")
-    p = Pipeline(db, notifier, llm=llm, default_threshold=1)
-    assert await p.handle(lead("Нужна визитка для мастера, бюджет 3000 руб", "1"))
-    assert "Минимальный заказ" not in llm.profiles[0] and "Кейсы: Сайт стоматологии" in llm.profiles[0]
-    # без правила ИИ видит минимум и сам отклоняет заказ с бюджетом «тысячи три», который не разобрать числом
-    assert not await p.handle(lead("Нужен сайт для кафе, бюджет небольшой, тысячи три", "2"))
-    assert "Минимальный заказ: 10000 ₽" in llm.profiles[1]
+    assert await Pipeline(db, notifier, llm=llm, default_threshold=1).handle(
+        lead("Нужна визитка для мастера, бюджет тысячи три", "1"))
+
+
+@pytest.mark.parametrize("raw, rub", [
+    (15000, 15000), (15000.0, 15000), ("15000", 15000), ("15 000", 15000), ("до 15\u00a0000 ₽", 15000),
+    (None, None), ("null", None), ("", None), ("не назван", None), (0, None), (-5, None), (True, None),
+    ([], None), (10 ** 12, None),
+    # вилка — верхняя граница; строка не только из суммы в рублях — сумму не знаем
+    ("5 000–20 000 ₽", 20000), ("5000 - 20000 руб.", 20000), ("15000.0", 15000), ("20 000 р.", 20000),
+    ("до5000руб.", 5000), ("5000руб", 5000),
+    ("от 5 000 ₽ до 8 000 ₽", 8000), ("от 5000 до 8000 руб.", 8000),
+    ("от 5,000 до 8,000 руб.", 8000), ("15,000", 15000), ("1.500.000 ₽", 1500000), ("15000.00", 15000),
+    ("от 5000", None), ("15 тыс", None), ("15к", None), ("200 $", None), ("3000 руб/час", None), ("15.5", None),
+])
+def test_ai_budget_in_rubles_is_parsed_as_number(raw, rub):
+    assert parse_rub(raw) == rub
+
+
+async def test_classifier_prompt_leaves_budget_threshold_to_program():
+    class Client(LLMClassifier):
+        async def complete_json(self, system, user, **kw):
+            self.system = system
+            return {"is_lead": True, "score": 4, "budget": "до 15 000 ₽", "budget_rub": "15 000", "why": "Сайт"}
+
+    client = Client("k", "http://x", "m")
+    verdict = await client.classify("Нужен сайт, бюджет до 15 000 ₽", "Услуги: сайты")
+    await client.client.aclose()
+    assert verdict.is_lead and verdict.budget_rub == 15000 and verdict.budget == "до 15 000 ₽"
+    assert "Бюджет на is_lead не влияет" in client.system and '"budget_rub"' in client.system
+    assert "назван только снизу («от …»)" in client.system  # «от 5 000 ₽» — не потолок, отсеивать по нему нельзя
+    # причина раньше решения: модель сначала объясняет, потом отвечает «лид или нет»
+    assert client.system.index('"why"') < client.system.index('"is_lead"')
+    # отклик: контакт и род не выдумываются, дешёвому заказчику не отказывают
+    for rule in ("если контакта в брифе нет, никакого не называй", "без рода", "не отказывай, не поучай",
+                 "нет такой цены в брифе — никаких сумм не называй"):
+        assert rule in client.system
 
 
 async def test_ai_gets_brief_and_card_shows_why_it_fits(db):
