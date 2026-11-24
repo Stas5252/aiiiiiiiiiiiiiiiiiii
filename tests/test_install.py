@@ -411,11 +411,25 @@ def test_install_switches_existing_copy_to_requested_branch(box):
     assert (target / ".env").exists() and (target / "install.sh").exists()
     upstream = subprocess.run(["git", "rev-parse", "--abbrev-ref", "@{u}"], cwd=target, capture_output=True, text=True)
     assert upstream.stdout.strip() == "origin/dev"  # иначе update.sh не найдёт, откуда обновляться
-    third = box.run(cwd=start, LEADHUNTER_BRANCH="нет-такой", **env)
-    assert third.returncode != 0 and "нет-такой" in third.text
 
     def out(*args):
         return subprocess.run(["git", *args], cwd=target, capture_output=True, text=True).stdout.strip()
+
+    def fetch_ok():
+        return subprocess.run(["git", "fetch", "--prune"], cwd=target, capture_output=True, text=True).returncode == 0
+
+    # Опечатка в названии ветки: отказ, а текущая ветка и её привязка к серверу остаются рабочими (update.sh живёт)
+    for where in (start, target):
+        typo = box.run(cwd=where, LEADHUNTER_BRANCH="нет-такой", **env)
+        assert typo.returncode != 0 and "нет-такой" in typo.text
+        assert out("rev-parse", "--abbrev-ref", "HEAD", "@{u}").split() == ["dev", "origin/dev"] and fetch_ok()
+
+    # Ветка без кода бота (main): не переключаемся — иначе из папки пропадут install.sh и update.sh
+    for where in (start, target):
+        empty = box.run(cwd=where, LEADHUNTER_BRANCH="main", **env)
+        assert empty.returncode != 0 and "нет кода" in empty.text, empty.text
+        assert (target / "install.sh").exists() and (target / "update.sh").exists()
+        assert out("rev-parse", "--abbrev-ref", "HEAD", "@{u}").split() == ["dev", "origin/dev"] and fetch_ok()
 
     # Запуск из самой папки проекта (так советует update.sh, когда ветку на сервере удалили) тоже меняет ветку
     inside = box.run(cwd=target, LEADHUNTER_BRANCH="stable", LEADHUNTER_ENV_ONLY="1")
@@ -431,6 +445,13 @@ def test_install_switches_existing_copy_to_requested_branch(box):
     back = box.run(cwd=start, LEADHUNTER_BRANCH="dev", **env)
     assert back.returncode == 0, back.text
     assert out("log", "-1", "--format=%s", "dev") == "mine" and out("rev-parse", "--abbrev-ref", "HEAD") == "dev"
+
+    # Ветку, на которой стоит бот, на сервере удалили: переход на другую ветку чинит обновления
+    git(up, "branch", "-D", "dev")
+    assert not fetch_ok()
+    moved = box.run(cwd=target, LEADHUNTER_BRANCH="stable", LEADHUNTER_ENV_ONLY="1")
+    assert moved.returncode == 0, moved.text
+    assert out("rev-parse", "--abbrev-ref", "HEAD", "@{u}").split() == ["stable", "origin/stable"] and fetch_ok()
 
 
 def test_install_without_curl_as_root_in_container(box):
@@ -491,6 +512,14 @@ def test_install_systemd_service(box):
     assert f"WorkingDirectory={box.proj}" in unit and "-m leadhunter" in unit and "User=tester" in unit
     assert box.called("systemctl daemon-reload") and box.called("systemctl enable --now leadhunter")
     assert "бот запущен" in res.text and "ещё не запущен" not in res.text
+
+
+
+
+
+
+
+
 
 
 def test_install_systemd_start_failure_is_not_fatal(box):
@@ -581,6 +610,18 @@ def test_update_branch_deleted_on_server(repo):
     res = repo.have("systemctl").run("update.sh", cwd=repo.inst, FAKE_UNIT_EXISTS="1")
     assert res.returncode != 0 and "ветк" in res.text.lower() and "LEADHUNTER_BRANCH=название_ветки ./install.sh" in res.text
     assert not repo.called("pip") and not repo.called("systemctl restart")
+    assert "main" not in res.text  # в main кода бота нет — туда не отправляем
+
+
+def test_update_branch_deleted_on_server_shallow_clone(repo):
+    """То же для копии, скачанной установщиком (git clone --depth 1 --branch): причина — ветка, а не интернет."""
+    inst = repo.tmp / "shallow"
+    git(repo.tmp, "clone", "-q", "--depth", "1", "--branch", "main", f"file://{repo.up}", str(inst))
+    shutil.copytree(repo.inst / ".venv", inst / ".venv")
+    git(repo.up, "branch", "-m", "main", "release")
+    res = repo.have("systemctl").run("update.sh", cwd=inst, FAKE_UNIT_EXISTS="1")
+    assert res.returncode != 0 and "LEADHUNTER_BRANCH=название_ветки ./install.sh" in res.text, res.text
+    assert "интернет" not in res.text and not repo.called("systemctl restart")
 
 
 def test_update_stops_before_restart_on_bad_settings(repo):

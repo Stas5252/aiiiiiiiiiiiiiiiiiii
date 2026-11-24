@@ -77,19 +77,39 @@ ensure_curl() {
 on_branch() { [ "$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" = "$BRANCH" ]; }
 
 switch_branch() { # switch_branch <папка> — переключить скачанную копию на ветку $BRANCH
-    local dir="$1"
-    git -C "$dir" remote set-branches origin "$BRANCH" || return 1
-    if git -C "$dir" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-        # Ветка в папке уже есть: свои коммиты в ней не трогаем, только догоняем сервер
-        git -C "$dir" fetch origin "$BRANCH" || return 1
+    local dir="$1" rc=0 f local_branch=0 one_branch=1
+    # Пока ветка не проверена, в папке ничего не меняем: опечатка в названии не должна сбить привязку
+    # текущей ветки (иначе update.sh перестанет обновлять), а ветка без бота — стереть install.sh и update.sh.
+    git -C "$dir" ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null || rc=$?
+    if [ "$rc" = 2 ]; then warn "Ветки $BRANCH на сервере нет."; return 1; fi
+    [ "$rc" = 0 ] || return 1
+    if git -C "$dir" show-ref --verify --quiet "refs/heads/$BRANCH"; then local_branch=1; fi
+    if [ "$local_branch" = 0 ] && [ "$(git -C "$dir" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+        git -C "$dir" fetch -q --depth 1 origin "refs/heads/$BRANCH" || return 1
+    else
+        git -C "$dir" fetch -q origin "refs/heads/$BRANCH" || return 1
+    fi
+    for f in install.sh update.sh pyproject.toml leadhunter; do
+        if ! git -C "$dir" cat-file -e "FETCH_HEAD:$f" 2>/dev/null; then
+            warn "В ветке $BRANCH нет кода бота (не нашёл $f) — остаюсь на прежней ветке."
+            return 1
+        fi
+    done
+
+    # Копия, скачанная установщиком, следит за одной веткой (--depth 1); полная копия — за всеми сразу
+    if git -C "$dir" config --get-all remote.origin.fetch | grep -qF 'refs/heads/*:'; then one_branch=0; fi
+    if [ "$one_branch" = 1 ]; then git -C "$dir" remote set-branches --add origin "$BRANCH" || return 1; fi
+    git -C "$dir" update-ref "refs/remotes/origin/$BRANCH" FETCH_HEAD || return 1
+    if [ "$local_branch" = 1 ]; then
         git -C "$dir" checkout -q "$BRANCH" || return 1
         git -C "$dir" branch -q --set-upstream-to="origin/$BRANCH" "$BRANCH" || return 1
-        git -C "$dir" merge -q --ff-only "origin/$BRANCH"
     else
-        # Папка скачана с другой ветки (и только с ней: --depth 1)
-        git -C "$dir" fetch --depth 1 origin "$BRANCH" || return 1
-        git -C "$dir" checkout -q -b "$BRANCH" --track "origin/$BRANCH"
+        git -C "$dir" checkout -q -b "$BRANCH" --track "origin/$BRANCH" || return 1
     fi
+    # Прежнюю ветку больше не запрашиваем: если её на сервере удалили, git fetch на ней спотыкается
+    if [ "$one_branch" = 1 ]; then git -C "$dir" remote set-branches origin "$BRANCH" || return 1; fi
+    # Свои коммиты в ветке не трогаем, только догоняем сервер
+    if [ "$local_branch" = 1 ]; then git -C "$dir" merge -q --ff-only "origin/$BRANCH" || return 1; fi
 }
 
 if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/pyproject.toml" ] || [ ! -d "$SELF_DIR/leadhunter" ]; then

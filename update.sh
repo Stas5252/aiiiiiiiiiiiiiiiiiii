@@ -14,16 +14,23 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     die "Эта папка скачана архивом, а не через git, — обновить её нельзя. Скачайте проект заново (git clone, адрес — в README), перенесите в новую папку файл .env и папку data/ и запустите там ./install.sh"
 fi
 
+NO_BRANCH="Ветки, с которой ставился бот, на сервере нет: её удалили или эта копия к ней не привязана. Переключите бота на ветку, в которой есть код бота (список веток — на странице проекта на GitHub): LEADHUNTER_BRANCH=название_ветки ./install.sh — настройки и база останутся на месте, а ветку без бота установщик не примет."
+
 echo "⬇️  Забираю обновления…"
 # --prune: если ветку на сервере удалили, узнаём об этом, а не «обновляемся» до старой версии
 if ! out="$(git fetch --prune 2>&1)"; then
+    # Копия от install.sh следит за одной веткой: когда её удаляют, git fetch падает так же, как без интернета
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    remote="$(git config "branch.$branch.remote" 2>/dev/null || true)"
+    ref="$(git config "branch.$branch.merge" 2>/dev/null || true)"
+    rc=0
+    if [ -n "$remote" ] && [ -n "$ref" ]; then git ls-remote --exit-code "$remote" "$ref" >/dev/null 2>&1 || rc=$?; fi
+    if [ "$rc" = 2 ]; then die "$NO_BRANCH"; fi
     printf '%s\n' "$out" | sed 's/^/    /' >&2
     die "Не удалось связаться с сервером обновлений: нет интернета или доступа к репозиторию. Проверьте связь и запустите снова."
 fi
 if ! upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)"; then upstream=""; fi
-if [ -z "$upstream" ]; then
-    die "Ветки, с которой ставился бот, на сервере нет: её удалили или эта копия к ней не привязана. Переключите бота на существующую ветку (обычно main): LEADHUNTER_BRANCH=название_ветки ./install.sh — настройки и база останутся на месте."
-fi
+if [ -z "$upstream" ]; then die "$NO_BRANCH"; fi
 if ! out="$(git merge --ff-only "$upstream" 2>&1)"; then
     printf '%s\n' "$out" | sed 's/^/    /' >&2
     changed="$(git status --porcelain --untracked-files=no | cut -c4- | head -5 | tr '\n' ' ')"
