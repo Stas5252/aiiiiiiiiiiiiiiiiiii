@@ -16,9 +16,9 @@
 | Модуль | Задание | Файлы | Статус |
 |---|---|---|---|
 | A. Установка и запуск | `docs/modules/A_install.md` | `install.sh`, `update.sh`, `.env.example`, `Dockerfile`, `docker-compose.yml`, `leadhunter/config.py`, `README.md`, `.gitignore`, `.gitattributes` | запланировано |
-| B. Источники и конвейер | `docs/modules/B_leads.md` | `leadhunter/sources/*`, `pipeline.py`, `scoring.py`, `filters.py`, `freshness.py`, `dedup.py`, `geo.py`, `extract.py`, `audit.py`, `llm.py`, `loops.py`, `db.py`, `models.py`, `bot/notify.py` | запланировано |
-| C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | запланировано |
-| D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | сделано, PR в `dev` ждёт слияния; после слияния B снять `xfail` с `test_k1_six_lookalike_requests_become_six_leads` |
+| B. Источники и конвейер | `docs/modules/B_leads.md` | `leadhunter/sources/*`, `pipeline.py`, `scoring.py`, `filters.py`, `freshness.py`, `dedup.py`, `geo.py`, `extract.py`, `audit.py`, `llm.py`, `loops.py`, `db.py`, `models.py`, `bot/notify.py` | сделано: находки № 1–24 и K1 закрыты, PR в `dev` из ветки `devin/1795385139-b-leads`. Осталось за другими модулями: № 5 — значение `HH_USER_AGENT` по умолчанию (A, `config.py`) |
+| C. Бот и безопасность | `docs/modules/C_bot.md` | `leadhunter/bot/*` кроме `bot/content.py` и `bot/notify.py`; `integrations.py`, `main.py`, `tunnel.py`, `tg_login.py` | сделано, PR в `dev` из `devin/1795384922-c-bot-security`: V1, V2, V4–V10, V17, V19, M5–M11; тесты — `tests/test_bot_security.py` |
+| D. Кабинет (Mini App) | `docs/modules/D_miniapp.md` | `leadhunter/miniapp/*` | сделано, PR #7 в `dev`: K2, V3, V13 (API), V14–V16, V18, M1–M4, M12–M17; доступ в кабинет — через `Guard` модуля C; тесты — `tests/test_miniapp_hardening.py` |
 | E. Контент-фабрика | `docs/modules/E_content.md` | `leadhunter/content/*`, `leadhunter/bot/content.py` | запланировано |
 
 ## Волна 2 — новое (после слияния волны 1)

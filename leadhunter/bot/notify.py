@@ -80,6 +80,8 @@ def format_lead(lead_id: int, lead: Lead, info: Enriched) -> str:
     lines = [head]
     if lead.title:
         lines.append(f"<b>{e(lead.title[:200])}</b>")
+    if lead.extra.get("chat_title"):
+        lines.append(f"💬 Чат: {e(str(lead.extra['chat_title'])[:100])}")
     if info.summary:
         lines.append(f"🤖 {e(info.summary)}")
     lines.append(e(lead.text[:900]) + ("…" if len(lead.text) > 900 else ""))
@@ -133,19 +135,23 @@ class TelegramNotifier:
                 log.exception("не удалось отправить сообщение в %s", chat_id)
                 return None
 
-    async def send(self, text: str, *, topic: str = "health", silent: bool = True, **kwargs) -> None:
-        """Служебное сообщение (алерт, дайджест): в тему группы, иначе владельцам."""
+    async def send(self, text: str, *, topic: str = "health", silent: bool = True, **kwargs) -> bool:
+        """Служебное сообщение (алерт, дайджест): в тему группы, иначе владельцам.
+        True — сообщение дошло хотя бы до одного получателя."""
         if await self.workspace.chat_id():
             try:
-                await self.workspace.send(topic, text, silent=silent, **kwargs)
-                return
+                if await self.workspace.send(topic, text, silent=silent, **kwargs):
+                    return True
             except Exception:
                 log.exception("не удалось отправить в группу")
+        delivered = False
         for chat_id in await self.owners():
-            await self._send_dm(chat_id, text, **kwargs)
+            if await self._send_dm(chat_id, text, **kwargs):
+                delivered = True
+        return delivered
 
-    async def notify_row(self, row) -> None:
-        """Повторная доставка лида из базы (например, накопленного до появления владельца)."""
+    async def notify_row(self, row) -> bool:
+        """Повторная доставка лида из базы (например, накопленного до появления владельца). True — доставлен."""
         import json
         from datetime import datetime
 
@@ -160,9 +166,10 @@ class TelegramNotifier:
         info = Enriched(row["score"], res, summary=row["summary"], service=row["service"] or "", budget=row["budget"] or "",
                         urgency=row["urgency"] or "", draft=row["draft"] or "", rule=row["rule"] or "",
                         author_bio=row["author_bio"] or "", freshness=(row["freshness"] or "") if "freshness" in row.keys() else "")
-        await self.notify(row["id"], lead, info)
+        return await self.notify(row["id"], lead, info)
 
-    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> None:
+    async def notify(self, lead_id: int, lead: Lead, info: Enriched) -> bool:
+        """True — карточка дошла (в группу или хотя бы одному владельцу)."""
         can_send = (self.outreach_enabled and lead.source == "telegram" and bool(info.draft)
                     and lead.contact.startswith(("@", "tg://")))
         kb = new_lead_keyboard(lead_id, has_draft=bool(info.draft), chat_key=lead.extra.get("chat_key"), can_send=can_send)
@@ -183,3 +190,4 @@ class TelegramNotifier:
                 if msg and not delivered:
                     await self.db.set_lead_message(lead_id, msg.chat.id, msg.message_id, None)
                     delivered = True
+        return delivered

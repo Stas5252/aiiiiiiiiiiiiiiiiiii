@@ -79,7 +79,7 @@ class TelegramChatsSource(Source):
             source="telegram",
             external_id=f"{getattr(chat, 'id', 0)}:{message.id}",
             text=message.raw_text or "",
-            title=f"Чат: {chat_title}",
+            # Название чата — только в extra: в title оно попадало бы в оценку, гео, правила и дедуп
             url=message_url(chat, message.id),
             author=author,
             contact=contact,

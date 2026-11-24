@@ -1,39 +1,93 @@
 """Гео-фильтр: если в тексте назван город и он не из разрешённых — лид не наш. Без города — оставляем."""
-from .filters import lemmatize
+import re
+
+from .filters import lemma
 
 RU_CITIES = [
-    "москва", "санкт-петербург", "петербург", "питер", "новосибирск", "екатеринбург", "казань", "нижний новгород",
-    "челябинск", "самара", "омск", "ростов-на-дону", "ростов", "уфа", "красноярск", "воронеж", "пермь", "волгоград",
+    "москва", "санкт-петербург", "новосибирск", "екатеринбург", "казань", "нижний новгород",
+    "челябинск", "самара", "омск", "ростов-на-дону", "уфа", "красноярск", "воронеж", "пермь", "волгоград",
     "краснодар", "саратов", "тюмень", "тольятти", "ижевск", "барнаул", "ульяновск", "иркутск", "хабаровск",
     "ярославль", "владивосток", "махачкала", "томск", "оренбург", "кемерово", "новокузнецк", "рязань", "астрахань",
     "набережные челны", "пенза", "липецк", "киров", "чебоксары", "калининград", "тула", "курск", "сочи", "ставрополь",
     "улан-удэ", "тверь", "магнитогорск", "иваново", "брянск", "белгород", "сургут", "владимир", "нижний тагил",
-    "архангельск", "чита", "калуга", "смоленск", "волжский", "курган", "орёл", "орел", "череповец", "владикавказ",
+    "архангельск", "чита", "калуга", "смоленск", "волжский", "курган", "орёл", "череповец", "владикавказ",
     "мурманск", "якутск", "грозный", "вологда", "саранск", "тамбов", "стерлитамак", "кострома", "петрозаводск",
     "нижневартовск", "йошкар-ола", "новороссийск", "таганрог", "комсомольск-на-амуре", "сыктывкар", "нальчик",
     "братск", "шахты", "дзержинск", "благовещенск", "великий новгород", "псков", "севастополь", "симферополь",
     "минск", "алматы", "астана", "ташкент", "бишкек", "ереван", "тбилиси", "баку", "дубай", "бали", "кипр",
 ]
-_CITY_LEMMAS = {" ".join(lemmatize(c)): c for c in RU_CITIES}
+# Как ещё называют город: всё приводится к имени из RU_CITIES
+SYNONYMS = {
+    "москва": ["мск", "msk", "moscow"],
+    "санкт-петербург": ["петербург", "питер", "спб", "с-пб", "с-петербург", "spb"],
+    "екатеринбург": ["екб", "ебург"],
+    "новосибирск": ["нск", "новосиб"],
+    "нижний новгород": ["нижний", "нн"],
+    "ростов-на-дону": ["ростов", "рнд"],
+    "набережные челны": ["челны"],
+    "красноярск": ["крск"],
+    "краснодар": ["крд"],
+    "челябинск": ["челяба", "члб"],
+    "владивосток": ["влад"],
+    "алматы": ["алма-ата"],
+    "астана": ["нур-султан"],
+    "орёл": ["орел"],
+}
+# Имена, фамилии и обычные слова: городом считаем только «в/из/г. Владимире» с заглавной буквы
+AMBIGUOUS = {"владимир", "грозный", "шахты", "орёл", "курган", "волжский", "киров", "бали", "кипр", "дубай",
+             "нижний", "влад", "нн"}
+CITY_PREPOSITIONS = {"в", "во", "из", "г", "гор", "город"}
+_TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.I)
+
+
+def _lemmas(text: str) -> tuple[str, ...]:
+    return tuple(lemma(t) for t in _TOKEN_RE.findall(text))
+
+
+def _build() -> dict[tuple[str, ...], str]:
+    forms = {}
+    for city in RU_CITIES:
+        for name in [city, *SYNONYMS.get(city, [])]:
+            forms[_lemmas(name)] = city
+    return forms
+
+
+_FORMS = _build()
+_AMBIGUOUS_FORMS = {_lemmas(a) for a in AMBIGUOUS}
+_MAX_WORDS = max(len(f) for f in _FORMS)
+
+
+def canonical(name: str) -> str:
+    """«мск», «Питер», «в Москве» → имя города из списка; незнакомое название — его леммы."""
+    lem = _lemmas(name)
+    return _FORMS.get(lem) or " ".join(lem)
 
 
 def mentioned_cities(text: str) -> set[str]:
-    lem = lemmatize(text)
+    raw = _TOKEN_RE.findall(text)
+    lem = [lemma(t) for t in raw]
     found = set()
-    for i, l in enumerate(lem):
-        if l in _CITY_LEMMAS:
-            found.add(_CITY_LEMMAS[l])
-        two = f"{l} {lem[i + 1]}" if i + 1 < len(lem) else ""
-        if two in _CITY_LEMMAS:
-            found.add(_CITY_LEMMAS[two])
+    i = 0
+    while i < len(lem):
+        for n in range(min(_MAX_WORDS, len(lem) - i), 0, -1):
+            form = tuple(lem[i:i + n])
+            city = _FORMS.get(form)
+            if not city:
+                continue
+            if form in _AMBIGUOUS_FORMS and not (
+                    raw[i][0].isupper() and i > 0 and raw[i - 1].lower() in CITY_PREPOSITIONS):
+                continue
+            found.add(city)
+            i += n - 1
+            break
+        i += 1
     return found
 
 
 def geo_allows(text: str, allowed: list[str]) -> bool:
     if not allowed:
         return True
-    allowed_norm = {" ".join(lemmatize(a)) for a in allowed}
     mentioned = mentioned_cities(text)
     if not mentioned:
         return True
-    return any(" ".join(lemmatize(c)) in allowed_norm for c in mentioned)
+    return bool(mentioned & {canonical(a) for a in allowed})
