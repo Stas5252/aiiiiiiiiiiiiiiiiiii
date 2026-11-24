@@ -24,6 +24,7 @@ def _extra_row(lead_id: int, has_draft: bool, can_send: bool, chat_key: str | No
     row = []
     if has_draft:
         row.append(InlineKeyboardButton(text="✍️ Черновик", callback_data=f"dr:{lead_id}"))
+    row.append(InlineKeyboardButton(text="🔎 Досье", callback_data=f"ds:{lead_id}"))
     if can_send:
         row.append(InlineKeyboardButton(text="📨 Отправить с аккаунта", callback_data=f"send:{lead_id}"))
     if chat_key:
@@ -38,9 +39,7 @@ def new_lead_keyboard(lead_id: int, has_draft: bool = False, chat_key: str | Non
         InlineKeyboardButton(text="🔥 Горячий", callback_data=f"st:{lead_id}:hot"),
         InlineKeyboardButton(text="🚫 Не лид", callback_data=f"st:{lead_id}:spam"),
     ]]
-    extra = _extra_row(lead_id, has_draft, can_send, chat_key)
-    if extra:
-        rows.append(extra)
+    rows.append(_extra_row(lead_id, has_draft, can_send, chat_key))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -51,9 +50,7 @@ def taken_keyboard(lead_id: int, has_draft: bool = False, can_send: bool = False
         InlineKeyboardButton(text="🤝 Сделка", callback_data=f"st:{lead_id}:deal"),
         InlineKeyboardButton(text="❌ Отказ", callback_data=f"st:{lead_id}:lost"),
     ]]
-    extra = _extra_row(lead_id, has_draft, can_send, None)
-    if extra:
-        rows.append(extra)
+    rows.append(_extra_row(lead_id, has_draft, can_send, None))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -221,6 +221,7 @@ async function openLead(id) {
     ${l.text.length > 400 ? `<button class="text" id="expand" style="padding:0">Показать полностью</button>` : ""}
     <div class="facts">${facts.map(([k, v]) => `<div><span class="k">${k}</span><span>${v}</span></div>`).join("")}</div>
     ${l.draft ? `<div class="draft"><div class="card-title">Черновик ответа <button class="text" id="copy" style="padding:0">Скопировать</button></div><pre id="draft">${esc(l.draft)}</pre></div>` : ""}
+    <div class="dossier" id="dossier"></div>
     ${next && !setMain(next[1], next[0]) ? `<button class="primary" data-s="${next[0]}">${next[1]}</button>` : ""}
     <div class="secondary">
       ${l.status === "new" ? `<button data-s="hot">🔥 Горячий</button>` : ""}${fresh ? `<button data-s="spam" class="danger">Не лид</button>` : ""}
@@ -234,6 +235,50 @@ async function openLead(id) {
   const ex = $("#expand"); if (ex) ex.onclick = () => { $("#lead-text").classList.remove("clamp"); ex.remove(); };
   const cp = $("#copy"); if (cp) cp.onclick = () => { navigator.clipboard?.writeText($("#draft").textContent); haptic.ok(); toast("Скопировано"); };
   bindLinks($("#sheet-content"));
+  loadDossier(id);
+}
+/* ---------- досье на лид ---------- */
+const stars = (r, n) => r ? ` · ★${(+r).toFixed(1)}${n ? ` (${n | 0})` : ""}` : "";
+function dossierSite(s, fromText) {
+  const feats = [["https", "HTTPS"], ["mobile", "мобильная версия"], ["robots", "robots.txt"], ["sitemap", "карта сайта"], ["schema", "микроразметка"], ["forms", "форма заявки"]];
+  const have = feats.filter(([k]) => s[k]).map(([, n]) => n), miss = feats.filter(([k]) => !s[k]).map(([, n]) => n);
+  const facts = [s.cms ? "сделан на " + esc(s.cms) : "", s.ok ? `ответ ${(+s.seconds).toFixed(1)} с` : "", s.ok ? `${s.kb} КБ` : "", s.year ? `в подвале ${s.year} год` : ""].filter(Boolean);
+  return `<div class="d-block"><b>Сайт ${esc(s.domain || "")}</b>${fromText ? ` <span class="hint">ссылка из текста заказа</span>` : ""}
+    ${!s.ok ? `<div class="d-bad">${esc(s.error || "не удалось проверить")}</div>` : s.problems?.length ? `<ul class="d-bad">${s.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : `<div>Явных проблем не найдено.</div>`}
+    ${s.title ? `<div class="hint">Заголовок: «${esc(s.title)}»</div>` : ""}
+    ${facts.length ? `<div class="hint">${facts.join(" · ")}</div>` : ""}
+    ${s.ok && have.length ? `<div class="hint">Есть: ${have.join(", ")}</div>` : ""}
+    ${s.ok && miss.length ? `<div class="hint">Нет: ${miss.join(", ")}</div>` : ""}</div>`;
+}
+function dossierHtml(d) {
+  const parts = [];
+  if (d.site) parts.push(dossierSite(d.site, d.site_from_text));
+  if (d.seo) parts.push(`<div class="d-block"><b>Поиск</b><div>По запросу «${esc(d.seo.query)}» сайт ${d.seo.position ? `на ${d.seo.position} месте` : `в первых ${d.seo.depth} результатах не найден`} <span class="hint">${esc(d.seo.engine)}</span></div></div>`);
+  if (d.market) parts.push(`<div class="d-block"><b>Конкуренты</b><div class="hint">Из ${d.market.total} компаний по запросу «${esc(d.market.query)}» сайт есть у ${d.market.with_site}</div>
+    ${(d.competitors || []).map((c) => { const r = c.report || {}; return `<div class="d-row"><span>${esc(c.title)}<span class="hint"> ${esc(r.domain || c.site)}${stars(c.rating, c.reviews)}</span></span><span class="hint">${!r.ok ? esc(r.error || "не открывается") : r.problems?.length ? esc(r.problems.slice(0, 3).join("; ")) : "проблем не найдено"}</span></div>`; }).join("")}</div>`);
+  if (d.geo) parts.push(`<div class="d-block"><b>Гео</b><div>${esc(d.geo.address && d.geo.city && d.geo.address.toLowerCase().includes(d.geo.city.toLowerCase()) ? d.geo.address : [d.geo.city, d.geo.address].filter(Boolean).join(", "))}${stars(d.geo.rating, d.geo.reviews)}</div></div>`);
+  if (d.ai) {
+    const rows = [["Что болит", d.ai.pain], ["Что предложить", d.ai.offer], ["Цена", d.ai.price], ["Что уточнить", (d.ai.questions || []).join("; ")]].filter(([, v]) => v);
+    parts.push(`<div class="d-block"><b>Вывод ИИ</b>${rows.map(([k, v]) => `<div><span class="hint">${k}:</span> ${esc(v)}</div>`).join("")}</div>`);
+    if (d.ai.message) parts.push(`<div class="draft"><div class="card-title">Первое сообщение <button class="text" id="d-copy" style="padding:0">Скопировать</button></div><pre id="d-message">${esc(d.ai.message)}</pre></div>`);
+  }
+  (d.notes || []).forEach((n) => parts.push(`<p class="hint">${esc(n)}</p>`));
+  return parts.join("");
+}
+async function loadDossier(id) {
+  const box = $("#dossier"); if (!box || sheetId !== id) return;
+  let r; try { r = await api(`/api/leads/${id}/dossier`); } catch (e) { return; }
+  if (!$("#dossier") || sheetId !== id) return;
+  if (r.running) { box.innerHTML = `<div class="card-title">Досье</div><p class="hint">Собираю досье — обычно до минуты…</p>`; setTimeout(() => loadDossier(id), 3000); return; }
+  const d = r.dossier;
+  box.innerHTML = `<div class="card-title">Досье${d ? `<span class="hint">${fmtTime(d.created_at)}</span>` : ""}</div>
+    ${r.error ? `<p class="hint d-bad">${esc(r.error)}</p>` : ""}
+    ${d ? dossierHtml(d) : r.error ? "" : `<p class="hint">Разбор сайта клиента, его место в поиске, конкуренты и первое сообщение.</p>`}
+    <div class="secondary"><button id="d-build">${d ? "Обновить досье" : "Собрать досье"}</button></div>`;
+  $("#d-build").onclick = async () => { haptic.tap();
+    try { await api(`/api/leads/${id}/dossier`, { method: "POST", body: JSON.stringify({ force: !!d }) }); } catch (e) { toast(e.message); return; }
+    loadDossier(id); };
+  const cp = $("#d-copy"); if (cp) cp.onclick = () => { navigator.clipboard?.writeText($("#d-message").textContent); haptic.ok(); toast("Скопировано"); };
 }
 /* внутри Telegram ссылки открываем его средствами, а не уходом со страницы кабинета */
 function bindLinks(root) {

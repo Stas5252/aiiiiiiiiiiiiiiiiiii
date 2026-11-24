@@ -12,6 +12,8 @@ from .bot.guard import Guard
 from .bot.handlers import BotDeps
 from .bot.notify import TelegramNotifier
 from .config import Settings
+from .analysis import DossierService
+from .bot.dossier import auto_dossier
 from .content.runtime import build_content, build_llm, reconfigure_ai
 from .content.scheduler import autopilot_loop, content_loop
 from .db import Database
@@ -131,6 +133,11 @@ async def run() -> None:
     if tg:
         from .discovery import ChatDiscovery
         deps.discover = ChatDiscovery(tg, db, llm, s.discover_join_per_day)
+
+    dossier = DossierService(db, lambda: deps.llm, proxy=s.proxy_url, get_serper_key=lambda: s.serper_api_key,
+                             default_profile=s.profile)
+    deps.extra["dossier"] = dossier
+    pipeline.on_delivered = auto_dossier(dossier, db, bot, s.hot_score)
 
     dp = build_dispatcher(deps)
     deps.extra["pipeline"] = pipeline

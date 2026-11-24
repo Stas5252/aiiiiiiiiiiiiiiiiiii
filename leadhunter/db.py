@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS author_events (author TEXT NOT NULL, chat_key TEXT NO
 CREATE INDEX IF NOT EXISTS author_events_author ON author_events(author, at);
 CREATE TABLE IF NOT EXISTS templates (service TEXT PRIMARY KEY, text TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS alerts (key TEXT PRIMARY KEY, text TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dossiers (lead_id INTEGER PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS site_reports (domain TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
 """
 
 # Колонки, добавленные после первой версии: для существующих баз делаем ALTER TABLE
@@ -54,6 +56,8 @@ LEAD_COLUMNS = {
     "sla_pinged": "INTEGER NOT NULL DEFAULT 0", "followup_at": "TEXT", "followup_count": "INTEGER NOT NULL DEFAULT 0",
     "phrase": "TEXT", "rule": "TEXT", "author_bio": "TEXT", "freshness": "TEXT", "competitors": "INTEGER",
     "why": "TEXT",
+    # что источник знает о компании (сайт, рубрика, город, рейтинг) — JSON, нужен для досье
+    "meta": "TEXT",
     # pending = карточку надо доставить (не «тихий» лид и не пауза); attempts — сколько раз досылали
     "pending": "INTEGER NOT NULL DEFAULT 0", "attempts": "INTEGER NOT NULL DEFAULT 0",
 }
@@ -172,6 +176,7 @@ class Database:
             ("author_events", "DELETE FROM author_events WHERE at < ?", (now - timedelta(days=2)).isoformat()),
             ("ignored", "DELETE FROM ignored WHERE until IS NOT NULL AND until < ?", now.isoformat()),
             ("alerts", "DELETE FROM alerts WHERE created_at < ?", (now - timedelta(days=1)).isoformat()),
+            ("site_reports", "DELETE FROM site_reports WHERE created_at < ?", old),
         ):
             cur = await self.conn.execute(sql, (arg,))
             removed[table] = cur.rowcount
@@ -188,12 +193,14 @@ class Database:
         cur = await self.conn.execute(
             "INSERT INTO leads (source, external_id, url, title, text, author, contact, score, matched, summary,"
             " service, budget, urgency, draft, chat_key, chat_title, phrase, rule, author_bio, freshness, competitors,"
-            " why, pending, found_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " why, meta, pending, found_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (lead.source, lead.external_id, lead.url, lead.title, lead.text, lead.author, lead.contact,
              score, matched, summary, service, budget, urgency, draft,
              lead.extra.get("chat_key"), lead.extra.get("chat_title"), lead.extra.get("phrase"), rule, author_bio,
-             freshness, lead.competitors, why, int(pending), utc_iso(lead.found_at), _now()),
+             freshness, lead.competitors, why,
+             json.dumps(lead.extra["meta"], ensure_ascii=False) if lead.extra.get("meta") else None,
+             int(pending), utc_iso(lead.found_at), _now()),
         )
         await self.conn.commit()
         lead_id = cur.lastrowid
@@ -201,6 +208,29 @@ class Database:
         if lead.extra.get("chat_key"):
             await self.bump_chat_stats(lead.extra["chat_key"], lead.extra.get("chat_title", ""), leads=1)
         return lead_id
+
+    # --- досье ---
+    async def save_dossier(self, lead_id: int, data: dict) -> None:
+        await self.conn.execute("INSERT OR REPLACE INTO dossiers (lead_id, data, created_at) VALUES (?, ?, ?)",
+                                (lead_id, json.dumps(data, ensure_ascii=False), _now()))
+        await self.conn.commit()
+
+    async def get_dossier(self, lead_id: int) -> dict | None:
+        cur = await self.conn.execute("SELECT data FROM dossiers WHERE lead_id = ?", (lead_id,))
+        row = await cur.fetchone()
+        return json.loads(row[0]) if row else None
+
+    async def save_site_report(self, domain: str, data: dict) -> None:
+        await self.conn.execute("INSERT OR REPLACE INTO site_reports (domain, data, created_at) VALUES (?, ?, ?)",
+                                (domain, json.dumps(data, ensure_ascii=False), _now()))
+        await self.conn.commit()
+
+    async def get_site_report(self, domain: str, max_age_days: float) -> dict | None:
+        """Разбор сайта не старше max_age_days: один и тот же сайт не дёргаем каждый раз."""
+        cur = await self.conn.execute("SELECT data FROM site_reports WHERE domain = ? AND created_at >= ?",
+                                      (domain, (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()))
+        row = await cur.fetchone()
+        return json.loads(row[0]) if row else None
 
     async def get_lead(self, lead_id: int) -> aiosqlite.Row | None:
         cur = await self.conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))

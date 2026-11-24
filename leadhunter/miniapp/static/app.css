@@ -296,3 +296,10 @@ input:not([type="checkbox"]):disabled, .switch input:disabled + span { opacity: 
 .c-fail { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--fg); border-radius: 10px; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
 .c-fail b { display: block; margin-bottom: 2px; }
 .c-fail-where { font-weight: 600; }
+
+/* досье на лид */
+.sheet .dossier { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
+.sheet .dossier .card-title { margin-bottom: 8px; font-size: 14px; }
+.sheet .dossier .d-block { margin: 10px 0; font-size: 14px; display: flex; flex-direction: column; gap: 3px; }
+.sheet .dossier ul.d-bad { margin: 2px 0; padding-left: 18px; } .sheet .dossier .d-bad { font-weight: 500; }
+.sheet .dossier .d-row { display: flex; flex-direction: column; padding: 6px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }

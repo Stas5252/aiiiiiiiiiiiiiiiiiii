@@ -65,6 +65,8 @@ class Pipeline:
         self._quota_alert_at = 0.0
         # Необязательный хук: по sender_id Telegram вернуть bio автора — идёт в ИИ и карточку
         self.author_bio: Callable[[int], Awaitable[str]] | None = None
+        # Необязательный хук: карточка доставлена (id лида, балл) — по нему для горячих лидов собирается досье
+        self.on_delivered: Callable[[int, int], Awaitable[None]] | None = None
 
     async def threshold(self) -> int:
         return int(await self.db.get_setting("threshold", str(self.default_threshold)))
@@ -186,6 +188,11 @@ class Pipeline:
                                           why=info.why, pending=deliver)
         if deliver:
             await self.notifier.notify(lead_id, lead, info)
+            if self.on_delivered:
+                try:
+                    await self.on_delivered(lead_id, info.score)
+                except Exception:
+                    log.exception("хук после доставки лида %s упал", lead_id)
         return True
 
     async def _quota_alert(self) -> None:

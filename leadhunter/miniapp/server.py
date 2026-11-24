@@ -26,7 +26,8 @@ STATUSES = ("new", "taken", "contacted", "replied", "deal", "lost", "spam", "hot
 OPEN_STATUSES = ("new", "hot", "taken", "contacted", "replied")
 FLAGS = ("paused", "autopilot", "leads_boards", "leads_social", "leads_jobs", "leads_maps", "leads_web", "format_post",
          "format_carousel", "format_reel", "format_toon", "format_aivideo", "format_ideas", "format_magnet",
-         "publish_telegram", "publish_instagram", "publish_threads", "publish_vk", "publish_youtube", "schedule_enabled")
+         "publish_telegram", "publish_instagram", "publish_threads", "publish_vk", "publish_youtube", "schedule_enabled",
+         "dossier_auto")
 # Что можно создать из кабинета; выключенные в настройках форматы в список не попадают
 CREATE_KINDS = ("post", "carousel", "reel", "magnet")
 # Как и в боте: состав команды, каналы публикации и пауза — решения владельца
@@ -152,6 +153,28 @@ class MiniAppAPI:
         if not data.get("draft") and data.get("service"):
             data["draft"] = await self.db.get_template(data["service"]) or ""
         return web.json_response({"lead": data, "events": events})
+
+    async def dossier_get(self, request):
+        """Готовое досье на лид и идёт ли сборка — кабинет опрашивает, пока running."""
+        await self.user(request)
+        lead_id = path_id(request)
+        service = self.deps.extra.get("dossier")
+        return web.json_response({"dossier": await self.db.get_dossier(lead_id),
+                                  "running": bool(service and service.running(lead_id)),
+                                  "error": service.errors.get(lead_id, "") if service else ""})
+
+    async def dossier_build(self, request):
+        """Запускает сборку в фоне: она идёт до минуты, держать запрос открытым незачем."""
+        await self.user(request)
+        lead_id = path_id(request)
+        body = await json_object(request)
+        service = self.deps.extra.get("dossier")
+        if service is None:
+            raise bad("Досье недоступно")
+        if not await self.db.get_lead(lead_id):
+            raise web.HTTPNotFound()
+        service.start(lead_id, force=to_bool(body.get("force", False), "force"))
+        return web.json_response({"running": True})
 
     async def set_status(self, request):
         user = await self.user(request)
@@ -652,6 +675,8 @@ def build_app(api: MiniAppAPI) -> web.Application:
     r.add_get("/api/leads", api.leads)
     r.add_get("/api/leads/{id:\\d+}", api.lead)
     r.add_post("/api/leads/{id:\\d+}/status", api.set_status)
+    r.add_get("/api/leads/{id:\\d+}/dossier", api.dossier_get)
+    r.add_post("/api/leads/{id:\\d+}/dossier", api.dossier_build)
     r.add_get("/api/stats", api.stats)
     r.add_get("/api/settings", api.settings_get)
     r.add_post("/api/settings", api.settings_set)

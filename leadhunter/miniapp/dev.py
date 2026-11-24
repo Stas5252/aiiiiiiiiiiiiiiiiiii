@@ -37,6 +37,9 @@ async def main(user_id: int, port: int) -> None:
         reconfigure_ai(s, deps, factory)
 
     deps.extra["integrations"] = Integrations(db, s, on_change)
+    from ..analysis import DossierService
+    deps.extra["dossier"] = DossierService(db, lambda: deps.llm or llm, proxy=s.proxy_url,
+                                           get_serper_key=lambda: s.serper_api_key, default_profile=s.profile)
     deps.extra["settings"] = s  # вкладка «Контент» и лендинги; публикация без бота недоступна
     api = MiniAppAPI(db, s.bot_token, guard, deps, [], dev_user_id=user_id)
     runner = web.AppRunner(build_app(api))
