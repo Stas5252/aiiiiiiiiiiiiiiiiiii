@@ -142,6 +142,33 @@ def test_bad_page_lists_problems_in_plain_words():
         "на главной нет ни формы заявки, ни телефона, ни мессенджера", "в подвале 2017 год — сайт давно не обновляли"]
 
 
+@pytest.mark.parametrize("body", [
+    "<meta " * 100_000, "<title>" * 85_000, "<h1>" * 150_000, "<" * 600_000, "a" * 600_000 + "@x.ru", "8 " * 300_000,
+    "<meta name=" * 50_000, '<meta content="' * 40_000, "© " * 300_000, "<form" * 120_000, " \n" * 300_000,
+])
+def test_hostile_page_is_parsed_in_linear_time(body):
+    """Сайт по ссылке из заказа пишет посторонний: мусорная страница не должна подвешивать бота."""
+    started = time.monotonic()
+    parse_page(Page("https://x.ru/", 200, body, 0.1), now=NOW)
+    assert time.monotonic() - started < 2
+
+
+async def test_hostile_robots_is_read_in_linear_time():
+    web = FakeWeb({"https://x.ru/robots.txt": " \n" * 300_000, "https://x.ru": GOOD})
+    started = time.monotonic()
+    assert (await analyze_site("https://x.ru", get=web, now=NOW))["ok"]
+    assert time.monotonic() - started < 2
+
+
+def test_meta_tags_are_read_in_any_attribute_order_and_quotes():
+    body = """<meta content='Чиним обувь' name="Description"><meta name=viewport content="width=device-width">
+    <META NAME="generator" CONTENT="Drupal 10"><h1 class="x"><span>Ремонт</span> обуви</h1><h1>Второй</h1><title>Каблук</title>"""
+    r = parse_page(Page("https://x.ru/", 200, body, 0.1), now=NOW)
+    assert (r["description"], r["mobile"], r["cms"], r["h1"], r["h1_count"], r["title"]) == (
+        "Чиним обувь", True, "Drupal 10", "Ремонт обуви", 2, "Каблук")
+    assert parse_page(Page("https://x.ru/", 200, "<p>Пишите: anna@firma.ru, тел. 8 (900) 123-45-67</p>", 0.1))["emails"] == ["anna@firma.ru"]
+
+
 @pytest.mark.parametrize("body, year", [("© 2015–2019 Фирма", 2019), ("Copyright 2024", 2024), ("&copy; ООО, 2021 г.", 2021),
                                         ("основана в 1998 году", None), ("<p>© Фирма</p><p>2010</p>", None)])
 def test_footer_year_is_the_latest_one_next_to_copyright(body, year):
