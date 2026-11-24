@@ -82,7 +82,7 @@ def subject(row) -> dict:
         head = text.split(". ")[0]
         cats, _, city = head.rpartition(", ")
         meta = {"category": cats.split(",")[0].strip(), "city": city.strip(), **meta}
-        if m := re.search(r"Сайт (\S+?):", text):
+        if m := re.search(r"Сайт (\S+?): ", text):  # двоеточие с пробелом: в «http://…» оно не конец адреса
             meta.setdefault("site", m.group(1))
     site = meta.get("site") or ("" if company else site_from_text(f"{row['title'] or ''}\n{text}"))
     return {"kind": ("company_site" if site else "company_nosite") if company else "order",

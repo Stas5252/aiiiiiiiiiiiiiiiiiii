@@ -237,6 +237,12 @@ async def test_subject_of_old_company_lead_without_meta_is_read_from_text(db):
     assert (s["kind"], s["site"], s["category"], s["city"], s["org_id"]) == ("company_site", "kabluk.ru", "Ремонт обуви", "Тула", "5")
 
 
+async def test_old_company_lead_with_scheme_in_site_keeps_whole_address(db):
+    lead = Lead(source="site_audit", external_id="audit:6", title="Топ-Мастер",
+                text="Ремонт обуви, Тула. Сайт http://obuvs.ru: без HTTPS. Повод предложить новый сайт.")
+    assert subject(await db.get_lead(await save(db, lead)))["site"] == "http://obuvs.ru"
+
+
 async def test_subject_of_order(db):
     row = await db.get_lead(await save(db, Lead(source="kwork", external_id="1", title="Доработать сайт", text="Сайт: kabluk.ru")))
     assert subject(row)["kind"] == "order" and subject(row)["site_from_text"] and has_subject(row)
