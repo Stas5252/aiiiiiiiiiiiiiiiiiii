@@ -2,7 +2,7 @@ import httpx
 
 from ..cities import MapsPlan
 from ..config import Settings
-from ..hosts import foreign_host, is_own_site
+from ..hosts import company_site, shared_hosts
 from ..models import Lead
 from .base import Source
 
@@ -14,12 +14,13 @@ MAX_PAGES = 2  # лимит бесплатного ключа — 500 запро
 def parse_features(data: dict, query: str, city: str) -> list[Lead]:
     """Организации без сайта — готовые лиды на сайт/бота."""
     leads = []
-    for f in data.get("features", []):
-        meta = (f.get("properties") or {}).get("CompanyMetaData") or {}
-        url = meta.get("url") or ""
-        if not meta.get("id") or is_own_site(url):
+    metas = [(f.get("properties") or {}).get("CompanyMetaData") or {} for f in data.get("features", [])]
+    # справочник не из списка узнаём так же, как в источнике без ключа: один домен у компаний с разными названиями
+    shared = shared_hosts([{"title": m.get("name"), "urls": [m["url"]]} for m in metas if m.get("url")])
+    for meta in metas:
+        site, where = company_site({"urls": [meta["url"]]} if meta.get("url") else {}, shared)
+        if not meta.get("id") or site:
             continue
-        where = foreign_host(url)
         no_site = f"Своего сайта в карточке нет: вместо него указана страница на {where}." if where else "Сайта в карточке нет."
         phones = ", ".join(p.get("formatted", "") for p in meta.get("Phones", []) if p.get("formatted"))
         categories = ", ".join(c.get("name", "") for c in meta.get("Categories", []))

@@ -176,6 +176,19 @@ def test_api_source_treats_social_page_as_no_site():
     assert lead.external_id == "2" and "страница на vk.com" in lead.text
 
 
+def test_api_source_recognizes_unknown_directory():
+    """Было: с ключом Geosearch компания со страницей в незнакомом справочнике считалась компанией с сайтом и не приходила."""
+    def feature(i, name, url):
+        return {"properties": {"CompanyMetaData": {"id": str(i), "name": name, "url": url}}}
+
+    data = {"features": [feature(1, "Лав", "https://nails-catalog.example/saratov/lav"),
+                         feature(2, "Ноготок", "https://nails-catalog.example/saratov/nogotok"),
+                         feature(3, "Глянец", "https://glyanec.ru/price")]}
+    leads = parse_features(data, "ногтевая студия", "Саратов")
+    assert [l.external_id for l in leads] == ["1", "2"]
+    assert all("страница на nails-catalog.example" in l.text for l in leads)
+
+
 async def test_site_audit_never_opens_local_address(monkeypatch):
     """Ссылку в карточку вписывает сама компания: адрес из внутренней сети (и переадресация на него) не открывается."""
     from leadhunter import brief
