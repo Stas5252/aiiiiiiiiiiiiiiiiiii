@@ -66,9 +66,8 @@ def budget_rub(text: str) -> int | None:
         if not _is_budget(m, text):
             continue
         unit, head, tail = m["unit"].lower(), text[:m.start()], text[m.end():]
-        if unit in ("$", "usd", "€"):
-            return None
-        if not _RUB_UNIT_RE.match(unit):
+        foreign = unit in ("$", "usd", "€")
+        if not foreign and not _RUB_UNIT_RE.match(unit):
             rub = _RUB_AFTER_RE.match(tail)
             if rub:
                 tail = tail[rub.end():]
@@ -76,7 +75,7 @@ def budget_rub(text: str) -> int | None:
                 continue
         if _PER_UNIT_RE.match(tail) or _ADVANCE_RE.search(head[-40:]):
             continue
-        if _FROM_RE.search(head):
+        if foreign or _FROM_RE.search(head):
             return None
         try:
             amount = float(re.sub(r"[ \u00a0]", "", m["hi"]).replace(",", "."))
