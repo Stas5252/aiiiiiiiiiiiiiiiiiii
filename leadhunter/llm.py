@@ -72,7 +72,7 @@ def parse_rub(value) -> int | None:
     if isinstance(value, str):
         text = re.sub(r"(\d)[.,]0+\b", r"\1", value.lower())  # «15000.0» — это 15000
         numbers = [re.sub(r"\D", "", n) for n in re.findall(r"\d[\d\s\u00a0]*", text)]
-        if not numbers or _RUB_NOISE.sub("", re.sub(r"\d", "", text)):
+        if not numbers or _RUB_NOISE.sub("", re.sub(r"\d", " ", text)):
             return None
         value = max(int(n) for n in numbers)
     try:
