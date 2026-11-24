@@ -243,6 +243,7 @@ async def test_classifier_prompt_leaves_budget_threshold_to_program():
     await client.client.aclose()
     assert verdict.is_lead and verdict.budget_rub == 15000 and verdict.budget == "до 15 000 ₽"
     assert "Бюджет на is_lead не влияет" in client.system and '"budget_rub"' in client.system
+    assert "назван только снизу («от …»)" in client.system  # «от 5 000 ₽» — не потолок, отсеивать по нему нельзя
     # причина раньше решения: модель сначала объясняет, потом отвечает «лид или нет»
     assert client.system.index('"why"') < client.system.index('"is_lead"')
     # отклик: контакт и род не выдумываются, дешёвому заказчику не отказывают
