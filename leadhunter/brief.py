@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import socket
+import weakref
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
@@ -91,10 +92,16 @@ async def load(db) -> dict[str, str]:
     return {k: str(data.get(k) or "") for k in KEYS}
 
 
+_save_locks: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
 async def save(db, patch: dict) -> dict[str, str]:
-    """Дописывает поля к сохранённому брифу; пустая строка очищает поле."""
-    data = {**await load(db), **clean(patch)}
-    await db.set_setting("brief", json.dumps({k: v for k, v in data.items() if v}, ensure_ascii=False))
+    """Дописывает поля к сохранённому брифу; пустая строка очищает поле. Записи идут по одной:
+    кабинет сохраняет каждое поле отдельным запросом, и два одновременных не должны затереть друг друга."""
+    patch = clean(patch)
+    async with _save_locks.setdefault(db, asyncio.Lock()):
+        data = {**await load(db), **patch}
+        await db.set_setting("brief", json.dumps({k: v for k, v in data.items() if v}, ensure_ascii=False))
     return data
 
 

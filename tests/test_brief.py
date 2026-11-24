@@ -114,6 +114,14 @@ async def test_save_merges_fields_and_empty_string_clears(db):
     assert set(data) == set(brief.KEYS)
 
 
+async def test_two_fields_saved_at_once_both_survive(db):
+    # кабинет сохраняет каждое поле отдельным запросом: быстрая правка двух полей не должна затирать первую
+    await asyncio.gather(*(brief.save(db, {key: f"значение {key}"}) for key in ("who", "services", "prices", "cases")))
+    data = await brief.load(db)
+    assert [data[k] for k in ("who", "services", "prices", "cases")] == [
+        "значение who", "значение services", "значение prices", "значение cases"]
+
+
 async def test_text_for_ai_falls_back_to_old_profile_until_brief_is_filled(db):
     assert await brief.profile(db, "Студия: сайты и боты") == "Студия: сайты и боты"
     await db.set_setting("profile", "Делаю сайты на Tilda")
