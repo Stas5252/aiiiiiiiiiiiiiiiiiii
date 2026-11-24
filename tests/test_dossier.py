@@ -170,6 +170,8 @@ def test_meta_tags_are_read_in_any_attribute_order_and_quotes():
     r = parse_page(Page("https://x.ru/", 200, body, 0.1), now=NOW)
     assert r["description"] == "Главная > Ремонт обуви" and r["mobile"]
     assert parse_page(Page("https://x.ru/", 200, "<p>Пишите: anna@firma.ru, тел. 8 (900) 123-45-67</p>", 0.1))["emails"] == ["anna@firma.ru"]
+    page = Page("https://x.ru/", 200, "<p>Почта: anna@firma.ru,boss@firma.ru;sales@firma.ru</p>", 0.1)
+    assert parse_page(page)["emails"] == ["anna@firma.ru", "boss@firma.ru"]  # храним первые две
 
 
 @pytest.mark.parametrize("body, year", [("© 2015–2019 Фирма", 2019), ("Copyright 2024", 2024), ("&copy; ООО, 2021 г.", 2021),

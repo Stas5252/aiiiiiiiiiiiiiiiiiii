@@ -95,7 +95,7 @@ def parse_page(page: Page, *, now: datetime | None = None) -> dict:
     text = re.sub(r"\s+", " ", _TAG.sub(" ", body))
     phones = list(dict.fromkeys(p.strip() for p in PHONE_RE.findall(text)))[:3]
     # почту ищем по словам с «@»: шаблон почты на длинной строке без пробелов считался бы слишком долго
-    emails = [m.group() for word in text.split() if "@" in word and len(word) <= 100 and (m := EMAIL_RE.search(word))]
+    emails = [m for word in re.split(r"[\s,;]+", text) if "@" in word and len(word) <= 100 for m in EMAIL_RE.findall(word)]
     report = {
         "https": page.url.startswith("https://"), "mobile": "viewport" in meta,
         "seconds": page.seconds, "kb": round(len(body.encode()) / 1024),
