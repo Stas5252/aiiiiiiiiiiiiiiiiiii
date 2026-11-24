@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 
 from .. import brief
 from ..http import CaptchaError, Fetcher
-from ..sources.yandex_maps_web import URL as MAPS_URL, clean_site, parse_yandex_items
+from ..hosts import company_site, is_own_site, shared_hosts
+from ..sources.yandex_maps_web import URL as MAPS_URL, parse_yandex_items
 from .fetch import fetch
 from .search import position, search_urls
 from .site import analyze_site, domain_of
@@ -24,13 +25,6 @@ MAX_COMPETITORS = 4
 AUTO_PER_HOUR = 6
 AI_TIMEOUT = 60  # секунд ждём вывод ИИ: перегруженная модель иначе держит досье минутами
 # Ссылки из текста заказа, которые точно не сайт заказчика: документы с ТЗ, макеты, соцсети, сами биржи
-NOT_CLIENT_SITE = (
-    "google.com", "yandex.ru", "ya.ru", "yadi.sk", "figma.com", "t.me", "telegram.me", "telegram.org", "vk.com",
-    "vk.me", "instagram.com", "threads.net", "youtube.com", "youtu.be", "github.com", "notion.so", "notion.site",
-    "dropbox.com", "miro.com", "behance.net", "pinterest.com", "pinterest.ru", "canva.com", "kwork.ru", "fl.ru",
-    "freelance.ru", "weblancer.net", "hh.ru", "wa.me", "whatsapp.com", "mail.ru", "ok.ru", "dzen.ru", "tilda.cc",
-    "wordpress.org", "wordpress.com", "apple.com", "rutube.ru", "avito.ru", "habr.com", "trello.com", "loom.com",
-)
 _URL = re.compile(r"https?://[^\s<>\"')\]]+|(?<![\w@./-])(?:[a-zа-яё0-9][a-zа-яё0-9-]*\.)+(?:ru|рф|su|by|kz)(?![\w-]|\.[\w-])",
                   re.I)
 
@@ -62,8 +56,7 @@ def site_from_text(text: str) -> str:
     """Первая ссылка из текста заказа, похожая на сайт заказчика."""
     for m in _URL.finditer(text or ""):
         url = m.group().rstrip(".,;:!?")
-        host = domain_of(url)
-        if host and "." in host and not any(host == bad or host.endswith("." + bad) for bad in NOT_CLIENT_SITE):
+        if is_own_site(url):
             return url
     return ""
 
@@ -85,6 +78,8 @@ def subject(row) -> dict:
         if m := re.search(r"Сайт (\S+?): ", text):  # двоеточие с пробелом: в «http://…» оно не конец адреса
             meta.setdefault("site", m.group(1))
     site = meta.get("site") or ("" if company else site_from_text(f"{row['title'] or ''}\n{text}"))
+    if company and site and not is_own_site(site):
+        site = ""  # у лидов, сохранённых раньше, «сайтом» могла стать страница справочника
     return {"kind": ("company_site" if site else "company_nosite") if company else "order",
             "site": site, "site_from_text": bool(site) and not company,
             "category": meta.get("category", ""), "city": meta.get("city", ""), "address": meta.get("address", ""),
@@ -99,20 +94,20 @@ def has_subject(row) -> bool:
 
 def competitor_rows(items: list[dict], *, org_id: str, domain: str, limit: int = MAX_COMPETITORS) -> tuple[dict, list[dict]]:
     """Из выдачи карт: сколько компаний рубрики имеют сайт и первые limit конкурентов с сайтом (не сам клиент)."""
+    shared = shared_hosts(items)
     others = [x for x in items if str(x.get("id")) != org_id]
-    rows = []
+    rows, with_site = [], 0
     for x in others:
-        if not x.get("urls"):
+        site, _ = company_site(x, shared)  # страница в справочнике или соцсети — не сайт конкурента
+        if not site:
             continue
-        site = clean_site(x["urls"][0])
-        if domain_of(site) == domain or any(domain_of(site) == domain_of(r["site"]) for r in rows):
+        with_site += 1
+        if len(rows) >= limit or domain_of(site) == domain or any(domain_of(site) == domain_of(r["site"]) for r in rows):
             continue
         rating = x.get("ratingData") or {}
         rows.append({"title": x.get("title", ""), "site": site, "rating": rating.get("ratingValue"),
                      "reviews": rating.get("reviewCount")})
-        if len(rows) >= limit:
-            break
-    return {"total": len(others), "with_site": sum(1 for x in others if x.get("urls"))}, rows
+    return {"total": len(others), "with_site": with_site}, rows
 
 
 def _brief_report(report: dict) -> dict:

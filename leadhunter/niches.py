@@ -2,6 +2,8 @@
 Движок универсальный — «специализация» целиком сидит в этих настройках."""
 from dataclasses import dataclass, field
 
+from .cities import SITE_RUBRICS
+
 
 @dataclass
 class Niche:
@@ -24,7 +26,7 @@ NICHES: dict[str, Niche] = {n.key: n for n in [
            "автоматизац": "автоматизация", "нейросет": "автоматизация", "crm": "автоматизация", "интеграц": "автоматизация",
            "мультик": "мультик", "анимац": "мультик", "ролик": "мультик", "reels": "мультик"},
           ["кейсы до/после", "сколько стоит и из чего цена", "ошибки на сайтах клиентов", "как бот экономит время", "ИИ в малом бизнесе"],
-          ["салон красоты", "стоматология", "автосервис", "кофейня", "фитнес клуб", "ремонт квартир"]),
+          list(SITE_RUBRICS)),
     Niche("realtor", "Недвижимость (риелтор, агентство)",
           "Риелтор: подбор и продажа квартир, новостройки и вторичка, ипотека под ключ, сопровождение сделки, аренда. Город и область.",
           ["ищу квартиру", "хочу купить квартиру", "посоветуйте риелтора", "продаю квартиру", "нужна ипотека", "сниму квартиру",
@@ -115,4 +117,4 @@ async def apply(db, phrases, n: Niche) -> None:
     await db.conn.executemany("INSERT OR REPLACE INTO keywords VALUES ('topic', ?, ?)", list(n.topic.items()))
     await db.conn.commit()
     if n.yandex_queries:
-        await db.set_setting("yandex_queries", ", ".join(n.yandex_queries))
+        await db.set_setting("maps_queries", ", ".join(n.yandex_queries))

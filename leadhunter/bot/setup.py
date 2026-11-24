@@ -235,9 +235,6 @@ def build_onboarding_callbacks(deps) -> Router:
             await cq.answer("Нет такой")
             return
         await apply(deps.db, deps.phrases, n)
-        for src in deps.sources:
-            if n.yandex_queries and getattr(src, "name", "") == "yandex_maps" and hasattr(src, "queries"):
-                src.queries = n.yandex_queries
         try:
             await cq.message.edit_text("Ниша выбрана:\n" + describe(n) + "\n\nУточнить описание: /profile текст")
         except TelegramBadRequest:

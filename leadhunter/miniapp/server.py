@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from aiohttp import web
 
 from .. import brief, features
+from ..cities import split_list
 from ..db import Database
 from ..filters import parse_rule
 from ..models import Lead
@@ -249,6 +250,7 @@ class MiniAppAPI:
             "brief_filled": brief.filled(await brief.load(self.db)),
             "brief_total": len(brief.FIELDS),
             "geo": await self.db.get_setting("geo", ""),
+            **await self.maps_settings(),
             **{key: await features.enabled(self.db, key) for key in FLAGS if key not in ("paused", "autopilot")},
             "paused": (await self.db.get_setting("paused")) == "1",
             "phrases": await self.deps.phrases.get(),
@@ -272,6 +274,15 @@ class MiniAppAPI:
             "miniapp_url": self.deps.extra.get("miniapp_url"),
         })
 
+    async def maps_settings(self) -> dict:
+        """Города и рубрики для карт: то, что реально пойдёт в запросы («Россия» не разворачиваем — так её и показываем)."""
+        plan = next((s.plan for s in self.deps.sources if hasattr(s, "plan")), None)
+        if not plan:
+            return {"maps": None}
+        cities = await self.db.get_setting("maps_cities", "") or ", ".join(plan.cities)
+        queries = await self.db.get_setting("maps_queries", "") or ", ".join(plan.queries)
+        return {"maps": {"cities": cities, "queries": queries, "status": await plan.describe()}}
+
     async def settings_set(self, request):
         """Сначала проверяем весь запрос, потом применяем: ошибка в одном поле не оставляет настройки наполовину изменёнными."""
         user = await self.user(request)
@@ -286,6 +297,8 @@ class MiniAppAPI:
                 ops.append((db.set_setting, ("threshold", str(to_int(value, key, 0, 10)))))
             elif key in ("profile", "geo", "voice", "pillars"):
                 ops.append((db.set_setting, (key, to_str(value, key))))
+            elif key in ("maps_cities", "maps_queries"):  # пустая строка — вернуться к списку из .env
+                ops.append((db.set_setting, (key, ", ".join(split_list(to_str(value, key))))))
             elif key in FLAGS:
                 ops.append((db.set_setting, (key, "1" if to_bool(value, key) else "0")))
             elif key == "phrases":

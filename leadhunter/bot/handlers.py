@@ -8,6 +8,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, ChatMemberUpdated, Message
 
 from .. import brief
+from ..cities import split_list
 from ..db import Database
 from ..llm import LLMClassifier
 from ..phrases import PhraseProvider
@@ -43,6 +44,7 @@ HELP = """Я ищу лидов и делаю контент под вашу ни
 /rules — правила вида <code>+сайт +(нужен|ищу) -предлагаю</code> (словоформы учитываются)
 /rule_add выражение · /rule_del id
 /geo Москва, Тула — только эти города (пусто = везде) · /geo off
+/maps — где и кого искать на картах: /maps города Россия · /maps рубрики стоматология, юрист
 /threshold N · /fresh часы откликов — какие заказы с бирж ещё реально забрать · /profile [текст] · /phrases · /phrases_set а; б · /phrases_gen
 /block @user · /unblock ключ · /ignored · /pause · /resume
 /template_set сайт текст — шаблон ответа по услуге, когда нет ИИ · /templates
@@ -159,9 +161,6 @@ def build_router(deps: BotDeps) -> Router:
             return
         n = NICHES[key]
         await apply(db, deps.phrases, n)
-        for src in deps.sources:  # Яндекс.Карты: кого искать без сайта
-            if n.yandex_queries and hasattr(src, "queries") and getattr(src, "name", "") == "yandex_maps":
-                src.queries = n.yandex_queries
         await m.answer("Переключил нишу:\n" + describe(n) + "\n\nИсточники подхватят фразы на следующем проходе. "
                        "Проверьте /profile, при желании уточните его под себя.")
 
@@ -388,6 +387,29 @@ def build_router(deps: BotDeps) -> Router:
             await m.answer("Формат: /rule_del id")
             return
         await m.answer("Удалил" if await db.remove_rule(rule_id) else "Нет такого")
+
+    @router.message(Command("maps"))
+    async def maps(m: Message, command: CommandObject):
+        if not await allowed(m):
+            return
+        plan = next((s.plan for s in deps.sources if hasattr(s, "plan")), None)
+        if not plan:
+            await m.answer("Поиск по картам не запущен: в .env выключен YANDEX_WEB_ENABLED.")
+            return
+        what, _, value = (command.args or "").strip().partition(" ")
+        key = {"города": "maps_cities", "рубрики": "maps_queries"}.get(what.lower())
+        if key and value.strip():
+            reset = value.strip().lower() in ("off", "сброс")
+            await db.set_setting(key, "" if reset else ", ".join(split_list(value)))
+        elif what:
+            await m.answer("Не понял. Примеры:\n/maps города Россия\n/maps города Саратов, Энгельс\n"
+                           "/maps рубрики стоматология, юрист\n/maps рубрики сброс — вернуть рубрики из .env")
+            return
+        cities, queries = await plan.lists()
+        shown = ", ".join(cities[:8]) + (f" и ещё {len(cities) - 8}" if len(cities) > 8 else "")
+        await m.answer(f"<b>Карты</b>\nГорода: {html.escape(shown)}\nРубрики: {html.escape(', '.join(queries))}\n\n"
+                       f"{await plan.describe()}\n\n/maps города Россия — вся страна (города от 250 тыс. жителей)\n"
+                       "/maps города Саратов, Энгельс — только эти\n/maps рубрики стоматология, юрист — кого искать")
 
     @router.message(Command("geo"))
     async def geo(m: Message, command: CommandObject):

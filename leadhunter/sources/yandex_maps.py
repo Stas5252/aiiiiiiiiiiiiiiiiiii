@@ -1,6 +1,8 @@
 import httpx
 
+from ..cities import MapsPlan
 from ..config import Settings
+from ..hosts import foreign_host, is_own_site
 from ..models import Lead
 from .base import Source
 
@@ -14,8 +16,11 @@ def parse_features(data: dict, query: str, city: str) -> list[Lead]:
     leads = []
     for f in data.get("features", []):
         meta = (f.get("properties") or {}).get("CompanyMetaData") or {}
-        if not meta.get("id") or meta.get("url"):
+        url = meta.get("url") or ""
+        if not meta.get("id") or is_own_site(url):
             continue
+        where = foreign_host(url)
+        no_site = f"Своего сайта в карточке нет: вместо него указана страница на {where}." if where else "Сайта в карточке нет."
         phones = ", ".join(p.get("formatted", "") for p in meta.get("Phones", []) if p.get("formatted"))
         categories = ", ".join(c.get("name", "") for c in meta.get("Categories", []))
         first = next((c["name"] for c in meta.get("Categories", []) if c.get("name")), query)
@@ -23,7 +28,7 @@ def parse_features(data: dict, query: str, city: str) -> list[Lead]:
             source="yandex_maps",
             external_id=str(meta["id"]),
             title=meta.get("name", ""),
-            text=f"{categories or query}, {city}. {meta.get('address', '')}. Сайта в карточке нет.",
+            text=f"{categories or query}, {city}. {meta.get('address', '')}. {no_site}",
             url=f"https://yandex.ru/maps/org/{meta['id']}",
             contact=phones,
             preset_score=6,
@@ -35,24 +40,24 @@ def parse_features(data: dict, query: str, city: str) -> list[Lead]:
 class YandexMapsSource(Source):
     name = "yandex_maps"
 
-    def __init__(self, s: Settings):
+    def __init__(self, s: Settings, db=None):
         self.key = s.yandex_geosearch_key
-        self.cities = s.yandex_cities
-        self.queries = s.yandex_queries
+        self.plan = MapsPlan(s.yandex_cities, s.yandex_queries, s.yandex_per_poll, db)
         self.interval = s.yandex_interval
 
     async def poll(self) -> list[Lead]:
         leads: list[Lead] = []
+        pairs, cursor = await self.plan.batch()
         async with httpx.AsyncClient(timeout=30) as c:
-            for city in self.cities:
-                for q in self.queries:
-                    for page in range(MAX_PAGES):
-                        params = {"apikey": self.key, "text": f"{q} {city}", "lang": "ru_RU", "type": "biz",
-                                  "results": PAGE, "skip": page * PAGE}
-                        r = await c.get(API, params=params)
-                        r.raise_for_status()
-                        data = r.json()
-                        leads += parse_features(data, q, city)
-                        if len(data.get("features", [])) < PAGE:
-                            break
+            for city, q in pairs:
+                for page in range(MAX_PAGES):
+                    params = {"apikey": self.key, "text": f"{q} {city}", "lang": "ru_RU", "type": "biz",
+                              "results": PAGE, "skip": page * PAGE}
+                    r = await c.get(API, params=params)
+                    r.raise_for_status()
+                    data = r.json()
+                    leads += parse_features(data, q, city)
+                    if len(data.get("features", [])) < PAGE:
+                        break
+        await self.plan.commit(cursor)
         return leads

@@ -55,10 +55,10 @@ def build_sources(s: Settings, db: Database, phrases: PhraseProvider) -> list[So
         sources.append(HHSource(s))
 
     if s.yandex_geosearch_key:
-        sources.append(YandexMapsSource(s))
+        sources.append(YandexMapsSource(s, db))
     elif s.yandex_web_enabled:
         sources.append(YandexMapsWebSource(s.yandex_cities, s.yandex_queries, s.yandex_interval, s.proxy_url,
-                                           s.site_audit_enabled, s.site_audit_per_poll))
+                                           s.site_audit_enabled, s.site_audit_per_poll, s.yandex_per_poll, db))
 
     if s.vk_token:
         sources.append(VKSource(s, phrases))

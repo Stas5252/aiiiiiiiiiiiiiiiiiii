@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .cities import SITE_RUBRICS
+
 log = logging.getLogger(__name__)
 
 # Списки в .env задаются через запятую: OWNER_IDS=123,456
@@ -148,10 +150,10 @@ class Settings(BaseSettings):
 
     # Яндекс.Карты: бизнесы без сайта (Geosearch API, ключ бесплатный)
     yandex_geosearch_key: str | None = None
-    yandex_cities: StrList = Field(default_factory=lambda: ["Москва"])
-    yandex_queries: StrList = Field(
-        default_factory=lambda: ["салон красоты", "стоматология", "автосервис", "кофейня", "фитнес клуб", "ремонт квартир"]
-    )
+    # «Россия» — города из leadhunter/cities.py; за один проход берётся yandex_per_poll пар «рубрика + город»
+    yandex_cities: StrList = Field(default_factory=lambda: ["Россия"])
+    yandex_queries: StrList = Field(default_factory=lambda: list(SITE_RUBRICS))
+    yandex_per_poll: int = 6
     yandex_interval: int = 6 * 3600
 
     # Биржи с публичным RSS заказов
@@ -297,6 +299,13 @@ class Settings(BaseSettings):
     def _check_interval(cls, v):
         if v <= 0:
             raise ValueError("нужно число секунд больше нуля")
+        return v
+
+    @field_validator("yandex_per_poll")
+    @classmethod
+    def _check_maps_per_poll(cls, v):
+        if not 1 <= v <= 30:
+            raise ValueError("нужно число от 1 до 30: столько запросов к картам бот делает за один проход")
         return v
 
     @field_validator("miniapp_port")
