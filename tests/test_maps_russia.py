@@ -239,13 +239,19 @@ async def test_failed_poll_does_not_move_on(db, audited):
 
 async def test_bot_stopped_during_site_audit_repeats_the_same_requests(db, monkeypatch):
     """Было: место обхода сохранялось до проверки сайтов — остановка бота в этот момент теряла лиды прохода на весь круг."""
-    async def stopped(site, timeout=15):
-        raise asyncio.CancelledError
+    started = asyncio.Event()
 
-    monkeypatch.setattr(yandex_maps_web, "audit_site", stopped)
+    async def slow_audit(site, timeout=15):
+        started.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(yandex_maps_web, "audit_site", slow_audit)
     src = source([org(4, "Глянец", ["https://glyanec.ru"])], ["Россия"], ["стилист"], per_poll=2, db=db)
+    poll = asyncio.create_task(src.poll())
+    await started.wait()
+    poll.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await src.poll()
+        await poll
     assert await db.get_setting("maps_cursor", "0") == "0"
 
 
