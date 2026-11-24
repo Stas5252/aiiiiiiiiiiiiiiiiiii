@@ -91,6 +91,10 @@ def build_dossier_router(deps) -> Router:
     async def dossier_cmd(m: Message, command: CommandObject):
         if not await guard.allowed(m.from_user, m.chat.id):
             return
+        # В посторонней группе досье увидели бы все её участники, а в нём контакты клиента и ваши цены
+        if m.chat.type != "private" and m.chat.id != await deps.workspace.chat_id():
+            await m.answer("Досье показываю только в личке и в рабочей группе.")
+            return
         arg = (command.args or "").strip().lstrip("#")
         if not arg.isdigit():
             await m.answer("Формат: /dossier 12 — номер лида из карточки. Или нажмите «🔎 Досье» под карточкой.")

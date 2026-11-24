@@ -529,6 +529,17 @@ async def test_dossier_is_for_team_only_and_command_works(env):
     assert "/dossier N" in (await env.cmd("/help"))[0]
 
 
+async def test_dossier_is_not_shown_in_foreign_group(env):
+    await become_owner(env)
+    lead_id = await save(env.db, company_row_lead())
+    await env.db.save_dossier(lead_id, {"title": "Каблук", "notes": ["готовое досье"]})
+    texts = await env.cmd(f"/dossier {lead_id}", chat_id=-100555)
+    assert texts == ["Досье показываю только в личке и в рабочей группе."] and not env.svc.web.asked
+    await env.db.set_setting("workspace_chat_id", "-100777")
+    assert any("готовое досье" in t for t in await env.cmd(f"/dossier {lead_id}", chat_id=-100777))
+    assert any("готовое досье" in t for t in await env.cmd(f"/dossier {lead_id}"))  # личка
+
+
 # --- автозапуск для горячих лидов ---
 async def test_hot_lead_with_site_gets_dossier_automatically(env):
     await become_owner(env)
