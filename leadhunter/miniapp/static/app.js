@@ -397,12 +397,14 @@ let pendingPatch = {};
 function autosave(patch) {
   for (const [k, v] of Object.entries(patch)) pendingPatch[k] = (v && typeof v === "object" && !Array.isArray(v)) ? { ...pendingPatch[k], ...v } : v;
   clearTimeout(saveT);
-  saveT = setTimeout(async () => { const body = pendingPatch; pendingPatch = {}; try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(body) }); haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500);
+  saveT = setTimeout(async () => { const body = pendingPatch; pendingPatch = {}; try { S = await api("/api/settings", { method: "POST", body: JSON.stringify(body) }); if (S.maps) $("#s-maps-status").textContent = S.maps.status; haptic.ok(); toast("Сохранено"); } catch (e) { haptic.err(); toast(e.message); } }, 500);
 }
 $$(".stepper button[data-step]").forEach((b) => b.onclick = () => { const v = Math.max(0, Math.min(10, +$("#s-threshold").textContent + +b.dataset.step)); $("#s-threshold").textContent = v; haptic.sel(); autosave({ threshold: v }); });
-$$("[data-feature]").forEach(el => el.onchange = () => { autosave({ [el.dataset.feature]: el.checked }); if (el.dataset.feature === "publish_vk") $("#row-ch-vk").classList.toggle("hidden", !el.checked); });
+$$("[data-feature]").forEach(el => el.onchange = () => { autosave({ [el.dataset.feature]: el.checked }); if (el.dataset.feature === "publish_vk") $("#row-ch-vk").classList.toggle("hidden", !el.checked); if (el.dataset.feature === "leads_maps") $("#card-maps").classList.toggle("hidden", !el.checked || !S.maps); });
 $("#s-paused").onchange = (e) => autosave({ paused: e.target.checked });
 $("#s-geo").onchange = (e) => autosave({ geo: e.target.value });
+$("#s-maps-cities").onchange = (e) => autosave({ maps_cities: e.target.value });
+$("#s-maps-queries").onchange = (e) => autosave({ maps_queries: e.target.value });
 $("#s-profile").onchange = (e) => autosave({ profile: e.target.value });
 function tag(text, onDel, cls = "") { const el = document.createElement("span"); el.className = "tag " + cls; el.innerHTML = `<code>${esc(text)}</code><button aria-label="удалить">×</button>`; $("button", el).onclick = onDel; return el; }
 function renderSettings(s) {
@@ -411,6 +413,8 @@ function renderSettings(s) {
   $("#row-ch-vk").classList.toggle("hidden", !s.publish_vk);
   const owner = Boolean(me?.is_owner);
   $("#s-threshold").textContent = s.threshold; $("#s-paused").checked = s.paused; $("#s-geo").value = s.geo; $("#s-profile").value = s.profile;
+  $("#card-maps").classList.toggle("hidden", !s.maps || !s.leads_maps);
+  if (s.maps) { $("#s-maps-cities").value = s.maps.cities; $("#s-maps-queries").value = s.maps.queries; $("#s-maps-status").textContent = s.maps.status; }
   $("#brief-count").textContent = s.brief_filled ? `заполнено ${s.brief_filled} из ${s.brief_total}` : "не заполнен — ИИ знает о вас одну строку";
   $("#s-profile-hint").textContent = s.brief_filled ? "— запасное описание: ИИ опирается на бриф" : "— ИИ оценивает лидов по этому описанию";
   // пауза, каналы и состав команды — только владелец (сервер проверяет то же самое)

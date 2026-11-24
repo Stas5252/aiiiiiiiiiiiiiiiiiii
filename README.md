@@ -54,7 +54,7 @@
 | **Weblancer** | Открытые проекты из Next.js-payload страницы | ✅ |
 | **Freelance.ru** | Лента заданий по словам «сайт», «бот», «нейросеть»… | ✅ |
 | **FL.ru** | RSS заказов | ✅ |
-| **Яндекс.Карты** | Поиск «стоматология Тула» → 25 организаций с сайтом/телефоном/соцсетями прямо в HTML. **Без сайта** → лид с телефоном | ✅ |
+| **Яндекс.Карты** | Поиск «стоматология Тула» → 25 организаций с сайтом/телефоном/соцсетями прямо в HTML. **Без сайта** → лид с телефоном. Страница в справочнике или соцсети вместо сайта — тоже «без сайта» | ✅ |
 | **Аудит сайтов** | У кого сайт есть — проверяем: не открывается / без HTTPS / не мобильный / заглушка → лид на редизайн | ✅ |
 | **hh.ru** | Проектные вакансии (публичный API). Выключен по умолчанию: включается `HH_ENABLED=true` + `HH_USER_AGENT` с вашей настоящей почтой, иначе hh отвечает 400 | блокирует IP дата-центров |
 | **Поисковики** | `site:vc.ru "нужен сайт"` через DuckDuckGo | медленно, часы задержки |
@@ -150,7 +150,7 @@ BOT_TOKEN=123456789:AAH... LEADHUNTER_YES=1 ./install.sh
 | Источники без API | `PROXY_URL`, `WORK_HOURS`, `THREADS_WEB_ENABLED`, `KWORK_ENABLED`, `KWORK_CATEGORIES`, `KWORK_PAGES`, `KWORK_INTERVAL`, `WEBLANCER_ENABLED`, `WEBLANCER_URLS`, `WEBLANCER_INTERVAL`, `FREELANCE_RU_ENABLED`, `FREELANCE_RU_QUERIES`, `FREELANCE_RU_INTERVAL`, `YANDEX_WEB_ENABLED`, `SITE_AUDIT_ENABLED`, `SITE_AUDIT_PER_POLL`, `IG_WEB_ENABLED`, `IG_WEB_PER_POLL`, `BROWSER_PROFILES_DIR`, `BROWSER_HEADLESS` |
 | Telegram-чаты через ваш аккаунт | `TG_API_ID`, `TG_API_HASH`, `TG_SESSION`, `TG_CHATS`, `TG_JOIN_CHATS`, `TG_SEARCH_INTERVAL`, `TG_SEARCH_WORDS`, `TG_OUTREACH_LIMIT` |
 | Биржи, вакансии, поисковики | `RSS_FEEDS`, `RSS_INTERVAL`, `HH_ENABLED`, `HH_USER_AGENT`, `HH_QUERIES`, `HH_INTERVAL`, `SERPER_API_KEY`, `WEB_SEARCH_SITES`, `WEB_SEARCH_INTERVAL` |
-| Официальные API | `THREADS_ACCESS_TOKEN`, `THREADS_INTERVAL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_HASHTAGS`, `IG_INTERVAL`, `YANDEX_GEOSEARCH_KEY`, `YANDEX_CITIES`, `YANDEX_QUERIES`, `YANDEX_INTERVAL`, `VK_TOKEN`, `VK_INTERVAL` |
+| Официальные API | `THREADS_ACCESS_TOKEN`, `THREADS_INTERVAL`, `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_HASHTAGS`, `IG_INTERVAL`, `YANDEX_GEOSEARCH_KEY`, `YANDEX_CITIES`, `YANDEX_QUERIES`, `YANDEX_PER_POLL`, `YANDEX_INTERVAL`, `VK_TOKEN`, `VK_INTERVAL` |
 | Команда и рабочая группа | `HOT_SCORE`, `DELIVER_DM`, `SLA_MINUTES`, `SLA_MIN_SCORE`, `FOLLOWUP_HOURS`, `SPAM_CHATS_PER_HOUR`, `DISCOVER_JOIN_PER_DAY`, `WEBHOOK_URL` |
 | Кабинет (Mini App) | `MINIAPP_TUNNEL`, `MINIAPP_URL`, `MINIAPP_PORT` |
 | ИИ | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_IMAGE_MODEL`, `GEMINI_VIDEO_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `LLM_MIN_SCORE`, `LLM_MAX_PER_HOUR`, `IMAGE_MODEL`, `TTS_MODEL`, `TTS_VOICE` |
@@ -229,6 +229,23 @@ Telegram открывает Mini App только по публичному HTTP
 пустые поля. Сайт по ссылке читается напрямую, без `PROXY_URL`. Меняет бриф только владелец; пока бриф пуст,
 работает старое описание из `/profile`.
 
+## Компании с карт: города и рубрики
+
+Бот ищет на Яндекс.Картах «рубрика + город» и присылает компании без своего сайта и компании со слабым сайтом.
+
+- **Города.** По умолчанию `Россия` — это все города от 250 тыс. жителей (список в `leadhunter/cities.py`).
+  Свои города: `/maps города Саратов, Энгельс` или кабинет → Настройки → «Компании с карт».
+- **Рубрики.** По умолчанию — местные услуги, которым нужен сайт: банкетные залы, базы отдыха, стоматологии,
+  салоны красоты, стилисты, фотостудии, компьютерные клубы и другие. Свои: `/maps рубрики стоматология, юрист`.
+- **Обход.** За один проход бот делает `YANDEX_PER_POLL` запросов (по умолчанию 6) с паузой 12–30 секунд, каждый —
+  в новом городе и по новой рубрике. Проходы идут раз в `YANDEX_INTERVAL` (6 часов) в рабочие часы. Место обхода
+  хранится в базе и переживает перезапуск; после смены городов или рубрик обход идёт с начала нового списка. Полный круг по всей России при настройках по умолчанию — несколько
+  месяцев: это холодная база, а не поток. `/maps` показывает, сколько пройдено.
+- **Справочники.** Если в карточке вместо сайта стоит страница справочника, агрегатора, сервиса записи или соцсети
+  (список в `leadhunter/hosts.py`), бот считает, что своего сайта у компании нет, и так и пишет в карточке лида.
+  В конкуренты в досье такие страницы не попадают. Справочник не из списка бот узнаёт сам: один домен указан
+  у компаний с разными названиями, и везде это внутренняя страница.
+
 ## Досье на лид
 
 Досье — всё, что нужно знать о клиенте перед первым сообщением. Что в нём, зависит от лида:
@@ -273,7 +290,7 @@ Telegram открывает Mini App только по публичному HTTP
 **Лиды**: `/stats`, `/leads 20`, `/digest`, `/funnel 30 source|service|phrase|chat`, `/export`
 
 **Фильтры**: `/rules`, `/rule_add +сайт +(нужен|ищу) -предлагаю` (словоформы учитываются; правило только из
-`-слов` блокирует), `/rule_del id`, `/geo Москва, Тула`, `/keywords`, `/kw_add topic квиз сайт`, `/kw_del слово`,
+`-слов` блокирует), `/rule_del id`, `/geo Москва, Тула`, `/maps`, `/keywords`, `/kw_add topic квиз сайт`, `/kw_del слово`,
 `/threshold 6`, `/brief`, `/profile текст`, `/phrases`, `/phrases_set а; б; в`, `/phrases_gen`, `/template_set сайт текст`,
 `/templates`, `/block @user`, `/unblock ключ`, `/ignored`, `/pause`, `/resume`
 
