@@ -215,6 +215,13 @@ async def test_site_closed_in_robots_is_not_read_and_reported():
     ("User-agent: *\nDisallow: /каталог/\n", "https://x.ru/%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/1", False),
     ("User-agent: *\nDisallow: /%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/\n", "https://x.ru/каталог/1", False),
     ("User-agent: *\nDisallow: /каталог/\n", "https://x.ru/%D1%86%D0%B5%D0%BD%D1%8B", True),
+    ("User-agent: *\nDisallow: /a/b\n", "https://x.ru/a%2Fb", True),  # «%2F» — не «/»: это другой адрес
+    ("User-agent: *\nDisallow: /a%2fb\n", "https://x.ru/a%2Fb", False),  # регистр %-кода не важен
+    ("User-agent: *\nDisallow: /%41dmin\n", "https://x.ru/Admin", False),
+    ("User-agent: *\nDisallow: /search?q\n", "https://x.ru/search%3Fq", True),
+    # исключение длиннее запрета, как бы они ни были записаны
+    ("User-agent: *\nDisallow: /%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/\nAllow: /каталог/обувь\n", "https://x.ru/каталог/обувь", True),
+    ("User-agent: *\nDisallow: /каталог/\nAllow: /%D0%BA%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3/a\n", "https://x.ru/каталог/a", True),
 ])
 def test_robots_rules_are_read_like_search_engines_do(robots, url, allowed):
     assert robots_allows(robots, url) is allowed

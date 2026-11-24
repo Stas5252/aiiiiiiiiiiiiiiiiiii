@@ -3,7 +3,7 @@ import html
 import re
 from itertools import islice
 from datetime import datetime
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 from ..audit import PARKED_RE
 from ..extract import EMAIL_RE, PHONE_RE
@@ -169,15 +169,29 @@ def _rule_matches(pattern: str, path: str) -> bool:
     return path.find(last, pos) >= 0
 
 
+_UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+_ESCAPE = re.compile(r"%[0-9a-fA-F]{2}")
+
+
+def _canon(value: str) -> str:
+    """Одна запись для пути и для правила: «/каталог/» и «/%d0%ba…» — один путь, а «%2F» и «/» — разные.
+    Кириллица кодируется, «%41» раскрывается в «A», остальные %-коды остаются как есть, заглавными."""
+    def fix(m: re.Match) -> str:
+        char = chr(int(m.group()[1:], 16))
+        return char if char in _UNRESERVED else m.group().upper()
+
+    return _ESCAPE.sub(fix, quote(value, safe="/?#[]@!$&'()*+,;=:%-._~"))
+
+
 def robots_allows(robots: str, url: str) -> bool:
     """Как у поисковиков: побеждает самое длинное подходящее правило, при равной длине — разрешающее.
     Стандартный разборщик Python не понимает «*» и «$» и берёт первое подходящее правило, а не самое точное."""
     parts = urlsplit(url)
-    # «/каталог/» в правиле и «/%D0%BA%D0%B0…» в ссылке — один и тот же путь: сравниваем раскодированные
-    path = unquote((parts.path or "/") + (f"?{parts.query}" if parts.query else ""))
+    path = _canon((parts.path or "/") + (f"?{parts.query}" if parts.query else ""))
     best_len, allowed = -1, True
     for allow, pattern in robots_rules(robots):
-        if _rule_matches(unquote(pattern), path) and (len(pattern) > best_len or (len(pattern) == best_len and allow)):
+        pattern = _canon(pattern)
+        if _rule_matches(pattern, path) and (len(pattern) > best_len or (len(pattern) == best_len and allow)):
             best_len, allowed = len(pattern), allow
     return allowed
 
