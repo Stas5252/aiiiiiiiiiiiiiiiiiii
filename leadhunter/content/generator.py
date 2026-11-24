@@ -199,7 +199,7 @@ class ContentGenerator:
         data = await self._ask(kind, system, user, 0.8)
         for idea in data.get("ideas", []) if kind == "ideas" else []:
             if idea["kind"] not in kinds:
-                idea["kind"] = "post"  # ИИ предложил выключенный формат
+                idea["kind"] = kinds[0]  # ИИ предложил выключенный формат
         return data
 
     async def idea_kinds(self) -> list[str]:

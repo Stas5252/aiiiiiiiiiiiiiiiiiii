@@ -98,7 +98,7 @@ async def autopilot_once(factory: ContentFactory, deliver, tz_name: str, hour: i
             ideas = (await factory.gen.generate("ideas", "", n=1))["ideas"]
             kind, topic = ideas[0].get("kind", "post"), ideas[0]["topic"]
         if not await features.enabled(db, "format_" + kind):
-            kind = "post"  # формат идеи выключен в настройках — делаем пост
+            kind = (await factory.gen.idea_kinds())[0]  # формат идеи выключен — берём первый включённый
         row = await factory.create(kind, topic, created_by="автопилот", parent_id=parent)
     except Exception as e:
         tries += 1
