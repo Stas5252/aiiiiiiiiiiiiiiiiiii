@@ -1,5 +1,7 @@
 """Города России для обхода карт: «Россия» в списке городов разворачивается в этот перечень."""
 
+import hashlib
+
 # Города с населением от ~250 тыс. человек, от крупных к меньшим
 RU_CITIES = [
     "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань", "Нижний Новгород", "Челябинск",
@@ -64,23 +66,30 @@ class MapsPlan:
             queries = split_list(await self.db.get_setting("maps_queries", "")) or queries
         return expand_cities(cities), list(dict.fromkeys(queries))
 
-    async def cursor(self) -> int:
-        raw = await self.db.get_setting(self.CURSOR, "0") if self.db else "0"
-        return int(raw) if raw.isdigit() else 0
+    @staticmethod
+    def stamp(cities: list[str], queries: list[str]) -> str:
+        return hashlib.sha1("\n".join([*cities, "#", *queries]).encode()).hexdigest()[:12]
 
-    async def batch(self) -> tuple[list[tuple[str, str]], int]:
+    async def cursor(self, cities: list[str], queries: list[str]) -> int:
+        """Место обхода. Оно относится к конкретным спискам: сменили города или рубрики — обход идёт с начала нового
+        списка, а не с середины (уже пройденные пары повторятся, но их лиды в базе есть и второй раз не придут)."""
+        pos, _, stamp = (await self.db.get_setting(self.CURSOR, "") if self.db else "").partition(":")
+        return int(pos) if pos.isdigit() and stamp == self.stamp(cities, queries) else 0
+
+    async def batch(self) -> tuple[list[tuple[str, str]], str]:
         """Пары (город, рубрика) на этот проход и место, с которого начнётся следующий (его передают в commit)."""
         cities, queries = await self.lists()
         total = len(cities) * len(queries)
         if not total:
-            return [], 0
-        start = await self.cursor() % total
+            return [], ""
+        start = await self.cursor(cities, queries) % total
         count = min(max(self.per_poll, 1), total)
-        return [pair_at(cities, queries, (start + i) % total) for i in range(count)], (start + count) % total
+        return ([pair_at(cities, queries, (start + i) % total) for i in range(count)],
+                f"{(start + count) % total}:{self.stamp(cities, queries)}")
 
-    async def commit(self, cursor: int) -> None:
-        if self.db:
-            await self.db.set_setting(self.CURSOR, str(cursor))
+    async def commit(self, cursor: str) -> None:
+        if self.db and cursor:
+            await self.db.set_setting(self.CURSOR, cursor)
 
     async def describe(self) -> str:
         """Одна строка для бота и кабинета: сколько городов и рубрик и как идёт обход."""
@@ -96,4 +105,4 @@ class MapsPlan:
         cities, queries = await self.lists()
         total = len(cities) * len(queries)
         return {"cities": len(cities), "queries": len(queries), "total": total,
-                "done": await self.cursor() % total if total else 0, "per_poll": min(max(self.per_poll, 1), total or 1)}
+                "done": await self.cursor(cities, queries) % total if total else 0, "per_poll": min(max(self.per_poll, 1), total or 1)}

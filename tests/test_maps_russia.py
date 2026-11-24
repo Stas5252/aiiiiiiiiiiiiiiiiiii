@@ -217,7 +217,7 @@ async def test_poll_takes_only_part_and_continues_next_time(db, audited):
     again = source([org(5, "Без сайта")], ["Россия"], ["стилист", "фотостудия", "психолог"], per_poll=4, db=db)
     await again.poll()
     assert again.fetcher.asked[0] == "фотостудия Казань" and len(again.fetcher.asked) == 4
-    assert await db.get_setting("maps_cursor") == "8"
+    assert (await db.get_setting("maps_cursor")).startswith("8:")
 
 
 async def test_small_list_is_polled_whole_every_time(db, audited):
@@ -231,7 +231,7 @@ async def test_failed_poll_does_not_move_on(db, audited):
     src = source([org(5, "Без сайта")], ["Россия"], ["стилист"], per_poll=3, db=db, fail_on=2)
     with pytest.raises(RuntimeError):
         await src.poll()
-    assert await db.get_setting("maps_cursor", "0") == "0"
+    assert await db.get_setting("maps_cursor", "") == ""
     src.fetcher = FakeFetcher([org(5, "Без сайта")])
     await src.poll()
     assert src.fetcher.asked[0] == "стилист Москва"
@@ -252,7 +252,22 @@ async def test_bot_stopped_during_site_audit_repeats_the_same_requests(db, monke
     poll.cancel()
     with pytest.raises(asyncio.CancelledError):
         await poll
-    assert await db.get_setting("maps_cursor", "0") == "0"
+    assert await db.get_setting("maps_cursor", "") == ""
+
+
+async def test_new_lists_are_walked_from_their_start(db, audited):
+    """Было: после смены рубрик обход продолжался с прежнего места, и начало нового списка откладывалось на весь круг."""
+    src = source([org(5, "Без сайта")], ["Россия"], ["стилист", "фотостудия"], per_poll=4, db=db)
+    await src.poll()
+    assert "пройдено 4 из" in await src.plan.describe()
+    await db.set_setting("maps_queries", "юрист, нотариус, психолог")
+    assert "пройдено 0 из" in await src.plan.describe()
+    src.fetcher = FakeFetcher([org(5, "Без сайта")])
+    await src.poll()
+    assert src.fetcher.asked[0] == "юрист Москва"
+    # те же списки, записанные по-другому, — обход не сбрасывается
+    await db.set_setting("maps_queries", "юрист;нотариус ,  психолог")
+    assert "пройдено 4 из" in await src.plan.describe()
 
 
 async def test_cabinet_lists_override_env_and_empty_returns_to_env(db):
